@@ -27,16 +27,6 @@
 >
 > Improvements are planned, and they will be published here.
 
-> [!CAUTION]
-> 🇫🇷 **LunaNX est le premier projet à avoir fait fonctionner Amazon Luna sur la Nintendo Switch.**
-> Certains reprennent l'intégralité du code et republient le même projet, souvent **sous le même
-> nom**, sans aucun crédit envers le travail d'origine. Ce n'est ni juste ni respectueux du temps
-> investi. **LunaNX est sous licence GPL-3.0 : les licences s'appliquent aussi dans cet univers.**
-> Toute reprise doit conserver les crédits d'origine (*KazaR-RooT* et ce dépôt), publier son code
-> source sous la même licence et indiquer les modifications apportées.
-> **⚠️ Soyez très vigilants : la dernière copie de ce type a en plus introduit des failles de
-> sécurité liées aux marketplaces Amazon. Téléchargez LunaNX uniquement depuis ce dépôt.**
-
 **LunaNX** is a homebrew application (`.nro`) that lets you play **Amazon Luna** cloud games on a
 Nintendo Switch running custom firmware. It signs in to your Amazon account, shows your Luna
 library, and streams the game to the console with your controller as the input device.
