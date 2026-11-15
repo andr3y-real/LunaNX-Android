@@ -10,6 +10,33 @@
   <img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="License GPL-3.0">
 </p>
 
+> [!CAUTION]
+> **LunaNX is the first project that made Amazon Luna run on the Nintendo Switch.** Some people
+> have taken its entire source code and are republishing the same project, often **under the same
+> name**, without giving any credit to the original work. That is neither fair nor respectful of
+> the many hours invested in it.
+>
+> **Reminder: LunaNX is licensed under the GPL-3.0, and licenses apply in the homebrew world
+> too.** You are free to study, modify and share LunaNX, but you **must** keep the original
+> copyright and credits (*KazaR-RooT* and this repository), publish your full source code under
+> the same license, and clearly state what you changed.
+>
+> **⚠️ Be very careful: the most recent unauthorized copy also introduced security flaws related
+> to Amazon marketplaces.** Your Amazon account is at stake: **only download LunaNX from this
+> repository** ([Releases](../../releases/latest)) and check the SHA-256 checksum.
+>
+> Improvements are planned, and they will be published here.
+
+> [!CAUTION]
+> 🇫🇷 **LunaNX est le premier projet à avoir fait fonctionner Amazon Luna sur la Nintendo Switch.**
+> Certains reprennent l'intégralité du code et republient le même projet, souvent **sous le même
+> nom**, sans aucun crédit envers le travail d'origine. Ce n'est ni juste ni respectueux du temps
+> investi. **LunaNX est sous licence GPL-3.0 : les licences s'appliquent aussi dans cet univers.**
+> Toute reprise doit conserver les crédits d'origine (*KazaR-RooT* et ce dépôt), publier son code
+> source sous la même licence et indiquer les modifications apportées.
+> **⚠️ Soyez très vigilants : la dernière copie de ce type a en plus introduit des failles de
+> sécurité liées aux marketplaces Amazon. Téléchargez LunaNX uniquement depuis ce dépôt.**
+
 **LunaNX** is a homebrew application (`.nro`) that lets you play **Amazon Luna** cloud games on a
 Nintendo Switch running custom firmware. It signs in to your Amazon account, shows your Luna
 library, and streams the game to the console with your controller as the input device.
