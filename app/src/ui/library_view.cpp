@@ -13,6 +13,7 @@ LUNANX_SOURCE_ORIGIN(u71d64d34926d73f3d5aa, "71d64d34926d73f3d5aa")
 #include "luna/entitlement_policy.hpp"
 #include "luna/game_artwork.hpp"
 #include "luna/recent_games.hpp"
+#include "luna/search_match.hpp"
 #include "qr_code_view.hpp"
 #include "settings_view.hpp"
 #include "stream_view.hpp"
@@ -214,14 +215,8 @@ LibraryView::LibraryView()
         OpenSettings();
         return true;
     });
-    registerAction(Tr("Quitter"), brls::BUTTON_BACK, [](brls::View*) {
-        brls::Application::quit();
-        return true;
-    });
-    registerAction(Tr("Quitter"), brls::BUTTON_START, [](brls::View*) {
-        brls::Application::quit();
-        return true;
-    });
+    // + et − ne quittent jamais LunaNX : + valide le clavier de la Switch et pouvait encore être
+    // enfoncé au retour de la recherche. On quitte par Menu principal → Quitter ou par HOME.
     registerAction({}, brls::BUTTON_LB, [this](brls::View*) {
         ChangePage(-1);
         return true;
@@ -425,8 +420,6 @@ void LibraryView::RefreshTexts()
     language_ = UiLanguage();
     updateActionHint(brls::BUTTON_Y, Tr("Actualiser"));
     updateActionHint(brls::BUTTON_X, Tr("Réglages"));
-    updateActionHint(brls::BUTTON_BACK, Tr("Quitter"));
-    updateActionHint(brls::BUTTON_START, Tr("Quitter"));
     menu_button_->SetTitle(Tr("Menu principal"));
     all_button_->SetTitle(Tr("Tous les jeux"));
     recent_button_->SetTitle(Tr("Reprendre"));
@@ -440,6 +433,7 @@ brls::View* LibraryView::getDefaultFocus()
 {
     if ((library_panel_->getVisibility() == brls::Visibility::VISIBLE))
         return carousel_->ItemCount() ? static_cast<brls::View*>(carousel_)
+            : !search_query_.empty() ? static_cast<brls::View*>(search_button_)
             : section_ == Section::Recent ? static_cast<brls::View*>(recent_button_)
             : section_ == Section::Top ? static_cast<brls::View*>(top_button_)
                                          : static_cast<brls::View*>(all_button_);
@@ -458,8 +452,7 @@ void LibraryView::draw(NVGcontext* vg, float x, float y, float width, float heig
     }
     backdrop_.Draw(vg, x, y, width, height);
     brls::Box::draw(vg, x, y, width, height, style, ctx);
-    const auto activities = brls::Application::getActivitiesStack();
-    const bool main_activity = !activities.empty() && activities.back()->getContentView() == this;
+    const bool main_activity = IsFrontmost();
     const bool library_visible = library_panel_->getVisibility() == brls::Visibility::VISIBLE ||
                                  rendered_layout_ == "List";
     if (main_activity && library_visible && !catalog_.empty())
@@ -474,6 +467,12 @@ void LibraryView::draw(NVGcontext* vg, float x, float y, float width, float heig
         nvgText(vg, x + width - 32, y + height - 14, version.c_str(), nullptr);
         nvgRestore(vg);
     }
+}
+
+bool LibraryView::IsFrontmost() const
+{
+    const auto& activities = brls::Application::getActivitiesStack();
+    return !activities.empty() && activities.back()->getContentView() == this;
 }
 
 void LibraryView::ShowLibraryPanel(bool visible)
@@ -494,10 +493,11 @@ void LibraryView::UpdateHeaderButtons()
     recent_button_->setVisibility(shown(covers));
     top_button_->setVisibility(shown(covers));
     search_button_->setVisibility(shown(covers));
-    all_button_->SetActive(section_ == Section::All);
-    recent_button_->SetActive(section_ == Section::Recent);
-    top_button_->SetActive(section_ == Section::Top);
-    search_button_->SetActive(!search_query_.empty());
+    const bool searching = !search_query_.empty();
+    all_button_->SetActive(!searching && section_ == Section::All);
+    recent_button_->SetActive(!searching && section_ == Section::Recent);
+    top_button_->SetActive(!searching && section_ == Section::Top);
+    search_button_->SetActive(searching);
     // Abonnement du compte dans la pastille d'état.
     std::string plan;
     if (plan_ == luna::AccountPlan::Premium)
@@ -509,7 +509,9 @@ void LibraryView::UpdateHeaderButtons()
     account_button_->SetImageUrl(client_ ? client_->Profile().avatar_url : std::string());
     // Haut du carrousel : bouton de la rubrique affichée (ou le premier bouton visible).
     brls::View* up = all_button_;
-    if (section_ == Section::Recent)
+    if (searching)
+        up = search_button_;
+    else if (section_ == Section::Recent)
         up = recent_button_;
     else if (section_ == Section::Top && (top_button_->getVisibility() == brls::Visibility::VISIBLE))
         up = top_button_;
@@ -599,6 +601,9 @@ void LibraryView::ShowSignedOut()
     featured_id_.clear();
     selected_id_.clear();
     search_query_.clear();
+    search_results_.clear();
+    ++search_generation_;
+    search_loading_ = false;
     section_ = Section::Top;
     startup_selection_pending_ = true;
     page_ = 0;
@@ -1023,6 +1028,7 @@ void LibraryView::ShowCatalog(const std::vector<luna::Shelf>& shelves)
         page_ = 0;
         selected_id_.clear();
         search_query_.clear();
+        search_results_.clear();
     }
     if (rendered_layout_ == "List")
     {
@@ -1084,6 +1090,32 @@ bool LibraryView::IsLocked(const luna::Game& game) const
 void LibraryView::RebuildSectionGames()
 {
     section_games_.clear();
+    if (!search_query_.empty())
+    {
+        // Tout le catalogue, quelle que soit la rubrique : meilleures correspondances d'abord,
+        // jeux de l'abonnement avant les jeux Luna Premium verrouillés.
+        struct Match
+        {
+            int score;
+            bool locked;
+            size_t index;
+        };
+        std::vector<Match> matches;
+        for (size_t i = 0; i < catalog_.size(); ++i)
+            if (const int score = luna::GameTitleMatchScore(catalog_[i].title, search_query_); score > 0)
+                matches.push_back({score, IsLocked(catalog_[i]), i});
+        std::stable_sort(matches.begin(), matches.end(), [](const Match& a, const Match& b) {
+            return a.score != b.score ? a.score > b.score : (!a.locked && b.locked);
+        });
+        std::set<std::string> seen;
+        for (const auto& match : matches)
+            AppendUnique(section_games_, seen, catalog_[match.index], catalog_.size());
+        // Puis les jeux trouvés par Luna (fautes de frappe, jeux absents du catalogue).
+        for (const auto& game : search_results_)
+            AppendUnique(section_games_, seen, Fresh(game, catalog_, catalog_index_),
+                         catalog_.size() + search_results_.size());
+        return;
+    }
     switch (section_)
     {
         case Section::All:
@@ -1112,15 +1144,6 @@ void LibraryView::RebuildSectionGames()
             section_games_ = luna::RecentGamesForShelves(recent_loaded_ ? recent_shelves_ : shelves_,
                                                          luna::LoadRecentGames(), catalog_);
             break;
-    }
-    if (!search_query_.empty())
-    {
-        const std::string query = Lowercase(search_query_);
-        section_games_.erase(std::remove_if(section_games_.begin(), section_games_.end(),
-                                            [&query](const luna::Game& game) {
-                                                return Lowercase(game.title).find(query) == std::string::npos;
-                                            }),
-                             section_games_.end());
     }
 }
 
@@ -1193,9 +1216,12 @@ void LibraryView::RefreshCarousel(bool keep_selection)
     const bool empty = items.empty();
     if (empty)
     {
-        // Sortir le focus des vues que l'on va masquer, avant de changer le layout.
-        brls::Application::giveFocus(section_ == Section::Recent ? recent_button_
-                                     : section_ == Section::Top ? top_button_ : all_button_);
+        // Sortir le focus des vues que l'on va masquer, avant de changer le layout. Recherche sans
+        // résultat : sur « Rechercher », pour corriger la saisie avec A (ou B pour revenir).
+        brls::Application::giveFocus(!search_query_.empty()       ? search_button_
+                                     : section_ == Section::Recent ? recent_button_
+                                     : section_ == Section::Top    ? top_button_
+                                                                   : all_button_);
     }
     carousel_->setVisibility(empty ? brls::Visibility::GONE : brls::Visibility::VISIBLE);
     info_->setVisibility(empty ? brls::Visibility::GONE : brls::Visibility::VISIBLE);
@@ -1203,7 +1229,9 @@ void LibraryView::RefreshCarousel(bool keep_selection)
     if (empty)
     {
         selected_id_.clear();
-        empty_label_->setText(!search_query_.empty()            ? Tr("Aucun jeu ne correspond à ta recherche.")
+        empty_label_->setText(!search_query_.empty()
+                                  ? (search_loading_ ? Tr("Recherche sur Luna…")
+                                                     : Tr("Aucun jeu ne correspond à ta recherche."))
                               : section_ == Section::Recent ? Tr("Aucune partie récente pour l'instant : lance un jeu pour le retrouver ici.")
                                                             : Tr("Aucun jeu dans cette rubrique."));
         ResetBackdrop();
@@ -1223,13 +1251,16 @@ void LibraryView::UpdateSectionHeader()
         case Section::Top: title = "Top 10"; break;
         case Section::Premium: title = "Luna Premium"; break;
     }
+    const bool searching = !search_query_.empty();
+    if (searching)
+        title = Tr("Rechercher");
     section_title_->setText(title);
     std::string subtitle = TrFormat("{} jeux", {std::to_string(section_games_.size())});
-    if (section_ == Section::All && plan_ == luna::AccountPlan::Standard)
+    if (!searching && section_ == Section::All && plan_ == luna::AccountPlan::Standard)
         subtitle += "  ·  " + Tr("Inclus dans ton abonnement");
-    if (section_ == Section::Premium && plan_ == luna::AccountPlan::Standard)
+    if (!searching && section_ == Section::Premium && plan_ == luna::AccountPlan::Standard)
         subtitle += "  ·  " + Tr("Nécessite Luna Premium");
-    if (!search_query_.empty())
+    if (searching)
         subtitle += "  ·  " + TrFormat("Recherche : « {} »", {search_query_});
     section_subtitle_->setText(subtitle);
     const size_t pages = std::max<size_t>(1, (section_games_.size() + kCarouselPageSize - 1) / kCarouselPageSize);
@@ -1252,13 +1283,21 @@ void LibraryView::ApplySection(Section section)
         return;
     if (section == Section::Premium && premium_count_ == 0)
         section = Section::All;
-    const bool changed = section != section_;
+    // Choisir une rubrique pendant une recherche la referme, même si c'est la rubrique d'origine.
+    const bool changed = section != section_ || !search_query_.empty();
     section_ = section;
     if (changed)
     {
         page_ = 0;
         selected_id_.clear();
-        search_query_.clear();
+        if (!search_query_.empty())
+        {
+            search_query_.clear();
+            search_results_.clear();
+            ++search_generation_;
+            search_loading_ = false;
+            RestoreStatus();
+        }
     }
     RebuildSectionGames();
     RefreshCarousel(!changed);
@@ -1360,30 +1399,137 @@ void LibraryView::SelectGame(const std::string& id)
 
 void LibraryView::BeginSearch()
 {
-    if (catalog_.empty())
+    if (catalog_.empty() || rendered_layout_ == "List" || !IsFrontmost())
         return;
     auto alive = alive_;
+    // Le clavier de la Switch est une applet bloquante qui rappelle cette fonction avant de
+    // rendre la main : la saisie est appliquée ensuite, hors du clic qui a ouvert le clavier.
     brls::Application::getImeManager()->openForText(
         [this, alive](std::string text) {
-            if (!*alive)
-                return;
-            search_query_ = std::move(text);
-            page_ = 0;
-            selected_id_.clear();
-            RebuildSectionGames();
-            RefreshCarousel(false);
-            brls::Application::giveFocus(getDefaultFocus());
+            brls::sync([this, alive, text = std::move(text)] {
+                if (*alive)
+                    ApplySearch(text);
+            });
         },
         Tr("Rechercher un jeu"), Tr("Saisis le titre d'un jeu"), 64, search_query_);
+    // Le bouton qui a fermé le clavier (A, B, + ou l'écran) peut encore être enfoncé : les
+    // entrées sont ignorées un court instant pour qu'il ne déclenche aucune action au retour.
+    brls::Application::blockInputs(true);
+    brls::delay(400, [] { brls::Application::unblockInputs(); });
+}
+
+void LibraryView::ApplySearch(const std::string& text)
+{
+    if (catalog_.empty() || rendered_layout_ == "List" ||
+        library_panel_->getVisibility() != brls::Visibility::VISIBLE)
+        return;
+    // Espaces de début et de fin retirés ; une saisie vide referme la recherche.
+    const size_t first = text.find_first_not_of(" \t\r\n");
+    const std::string query =
+        first == std::string::npos ? std::string() : text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
+    if (query.empty())
+    {
+        if (!search_query_.empty())
+            ClearSearch();
+        return;
+    }
+    search_query_ = query;
+    search_results_.clear();
+    page_ = 0;
+    selected_id_.clear();
+    search_loading_ = static_cast<bool>(client_);
+    RebuildSectionGames();
+    RefreshCarousel(false);
+    if (IsFrontmost())
+        brls::Application::giveFocus(getDefaultFocus());
+    LogRuntimeEvent("library", "search", "local=" + std::to_string(section_games_.size()));
+    StartOnlineSearch(query);
+}
+
+void LibraryView::StartOnlineSearch(const std::string& query)
+{
+    const uint64_t request = ++search_generation_;
+    if (!client_)
+    {
+        search_loading_ = false;
+        return;
+    }
+    search_loading_ = true;
+    SetStatus(Tr("Recherche sur Luna…"));
+    const auto alive = alive_;
+    const auto client = client_;
+    const auto generation = account_generation_;
+    brls::async([this, alive, client, generation, request, query] {
+        std::vector<luna::Game> games;
+        bool failed = false;
+        try
+        {
+            games = client->SearchGames(query);
+        }
+        catch (const std::exception& ex)
+        {
+            failed = true;
+            LogRuntimeEvent("library", "online_search_failed", ex.what());
+        }
+        brls::sync([this, alive, client, generation, request, query, failed, games = std::move(games)]() mutable {
+            if (!*alive || client_ != client || generation != account_generation_ || request != search_generation_ ||
+                search_query_ != query)
+                return;
+            search_loading_ = false;
+            RestoreStatus();
+            if (failed)
+                brls::Application::notify(Tr("Recherche Luna indisponible : seuls les jeux déjà chargés sont affichés."));
+            // Les jeux trouvés rejoignent le catalogue (« Tous les jeux » compris) et y restent.
+            if (!games.empty())
+            {
+                shelves_.push_back(luna::Shelf {"", "SEARCH", games});
+                for (const auto& game : games)
+                    AddToCatalog(catalog_, catalog_index_, game);
+                premium_count_ = static_cast<size_t>(std::count_if(
+                    catalog_.begin(), catalog_.end(), [](const luna::Game& game) { return game.premium_only; }));
+            }
+            search_results_ = std::move(games);
+            if (rendered_layout_ == "List" || library_panel_->getVisibility() != brls::Visibility::VISIBLE)
+                return;
+            const bool was_empty = carousel_->ItemCount() == 0;
+            RebuildSectionGames();
+            // Toujours rien : seul le message change (le focus reste où l'utilisateur l'a mis,
+            // même si un autre écran est ouvert par-dessus).
+            if (was_empty && section_games_.empty())
+            {
+                empty_label_->setText(Tr("Aucun jeu ne correspond à ta recherche."));
+                UpdateSectionHeader();
+                return;
+            }
+            RefreshCarousel(true);
+            // Résultats arrivés alors que rien n'était trouvé : on les sélectionne directement.
+            if (was_empty && carousel_->ItemCount() > 0 && IsFrontmost() &&
+                brls::Application::getCurrentFocus() == search_button_)
+                brls::Application::giveFocus(carousel_);
+        });
+    });
 }
 
 void LibraryView::ClearSearch()
 {
     search_query_.clear();
+    search_results_.clear();
+    ++search_generation_;
+    search_loading_ = false;
+    RestoreStatus();
     page_ = 0;
+    selected_id_.clear();
     RebuildSectionGames();
     RefreshCarousel(true);
     brls::Application::giveFocus(getDefaultFocus());
+}
+
+void LibraryView::RestoreStatus()
+{
+    // L'étiquette d'état est partagée avec la connexion et l'exploration en arrière-plan.
+    if (loading_)
+        return;
+    SetStatus(client_ && !exploration_done_ ? Tr("Recherche d'autres jeux…") : std::string());
 }
 
 void LibraryView::ShowMainMenu()
@@ -1539,7 +1685,8 @@ void LibraryView::StartCatalogExploration()
             if (*alive && generation == explore_generation_.load())
             {
                 exploration_done_ = true;
-                SetStatus("");
+                if (!search_loading_)
+                    SetStatus("");
             }
         });
     });
@@ -1580,7 +1727,8 @@ void LibraryView::AddDiscoveredGames(std::vector<luna::Game> games)
     }
     if (!(library_panel_->getVisibility() == brls::Visibility::VISIBLE))
         return;
-    if (section_ != Section::All && section_ != Section::Premium)
+    // Une recherche en cours porte sur tout le catalogue : les nouveaux jeux peuvent y figurer.
+    if (search_query_.empty() && section_ != Section::All && section_ != Section::Premium)
     {
         if (section_ == Section::Recent)
         {

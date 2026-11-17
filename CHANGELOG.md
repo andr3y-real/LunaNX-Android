@@ -1,5 +1,24 @@
 # Changelog
 
+## v3.1 — 2026-11-17
+
+- Bug fix update: searching for a game that did not exist made LunaNX crash and close.
+  **+ and − no longer quit LunaNX** from the library. The Switch keyboard confirms with +,
+  which could still be held when the search results appeared.
+  Quit with **Main menu → Quit** or the HOME button. Inputs are also ignored briefly after the
+  keyboard closes, so the button that confirmed it cannot trigger another action.
+- Search the whole catalog instead of only the current section (Top 10 by default): Luna
+  Premium games are included and marked as locked when they are not in the subscription.
+- Ask Luna's own search service as well, so games missing from the loaded catalog and titles
+  typed with a typo are found. Games found this way are added to All games. If Luna finds
+  nothing, its suggestions are not shown as results.
+- Ignore case, Latin accents, punctuation, ™/®/© symbols, extra spaces and word order when
+  matching titles; the best matches are listed first. A search with no result keeps focus on
+  Search (A to edit, B to return).
+- Find more games during background catalog exploration: rows that Luna loads separately are
+  now resolved, game tiles without artwork are kept, and game pages no longer use up the
+  exploration budget.
+
 ## v3.0 — 2026-11-17
 
 - Introduce the redesigned cover carousel, new LunaNX logos, branded game launch screen

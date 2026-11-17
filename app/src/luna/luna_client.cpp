@@ -901,7 +901,7 @@ void LunaClient::SignIn(const Status& status)
                         " profile=" + (account_.profile_token.empty() ? "none" : "ok"));
 }
 
-json_t* LunaClient::GetPage(json_t* page_context, const std::string& service_token) const
+json_t* LunaClient::GetPage(json_t* page_context, const std::string& service_token, json_t* search_context) const
 {
     json_t* body = json_pack("{s:i, s:s, s:o, s:{s:[]}, s:[]}",
                              "timeout", 10000,
@@ -913,14 +913,17 @@ json_t* LunaClient::GetPage(json_t* page_context, const std::string& service_tok
         json_object_set_new(body, "pageContext", page_context);
     if (!service_token.empty())
         json_object_set_new(body, "serviceToken", json_string(service_token.c_str()));
+    if (search_context)
+        json_object_set_new(body, "searchContext", search_context);
     return Call("getPage", body);
 }
 
-void LunaClient::ResolveLazyCollections(json_t* page, bool strict_recent) const
+size_t LunaClient::ResolveLazyCollections(json_t* page, bool strict_recent, json_t* search_context,
+                                          size_t maximum_widgets, const std::function<bool()>& keep_going) const
 {
     DecodeEmbeddedJson(page);
     std::set<std::string> requested;
-    constexpr size_t kMaximumWidgets = 16;
+    const size_t kMaximumWidgets = maximum_widgets;
     for (int depth = 0; depth < 4 && requested.size() < kMaximumWidgets; ++depth)
     {
         std::vector<json_t*> pending;
@@ -936,7 +939,7 @@ void LunaClient::ResolveLazyCollections(json_t* page, bool strict_recent) const
         bool resolved = false;
         for (json_t* node : pending)
         {
-            if (requested.size() >= kMaximumWidgets)
+            if (requested.size() >= kMaximumWidgets || (keep_going && !keep_going()))
                 break;
             const std::string token = Str(node, "serviceToken");
             const std::string id = Str(node, "id");
@@ -958,6 +961,9 @@ void LunaClient::ResolveLazyCollections(json_t* page, bool strict_recent) const
                 json_object_set_new(body, "pageContext", json_deep_copy(context));
                 json_object_set_new(body, "widgetId", json_string(id.c_str()));
             }
+            // Résultats de recherche chargés à part : même contexte que la page (comme le site).
+            if (search_context)
+                json_object_set_new(body, "searchContext", json_deep_copy(search_context));
             try
             {
                 auto response = Adopt(Call("getWidget", body));
@@ -983,6 +989,7 @@ void LunaClient::ResolveLazyCollections(json_t* page, bool strict_recent) const
         if (!resolved)
             break;
     }
+    return requested.size();
 }
 
 std::vector<Shelf> LunaClient::FetchRecentShelves() const
@@ -1247,8 +1254,11 @@ void LunaClient::ExploreCatalog(std::set<std::string> known,
                                 const std::function<void(std::vector<Game>)>& on_games,
                                 const std::function<bool()>& keep_going) const
 {
-    // Plafond : chaque page pèse jusqu'à quelques centaines de Ko et prend ~0,5 s.
-    constexpr int kMaximumPages = 60;
+    // Plafond en requêtes (pages et collections différées) : chacune prend ~0,5 s. Les jeux
+    // déjà trouvés restent affichés ; l'exploration reprend après une partie.
+    constexpr int kMaximumRequests = 220;
+    // Collections différées chargées par page explorée (rangées « Tout voir », genres…).
+    constexpr size_t kMaximumWidgetsPerPage = 10;
     std::deque<std::string> queue;
     std::set<std::string> queued;
     {
@@ -1265,12 +1275,14 @@ void LunaClient::ExploreCatalog(std::set<std::string> known,
 
     std::set<std::string> visited_pages;
     int pages = 0;
+    int requests = 0;
     size_t found = 0;
-    while (!queue.empty() && pages < kMaximumPages && keep_going())
+    while (!queue.empty() && requests < kMaximumRequests && keep_going())
     {
         const std::string token = queue.front();
         queue.pop_front();
         ++pages;
+        ++requests;
         try
         {
             auto page = Adopt(GetPage(nullptr, token));
@@ -1289,6 +1301,13 @@ void LunaClient::ExploreCatalog(std::set<std::string> known,
             });
             if (detail_page)
                 continue;
+            // Les rangées des pages explorées arrivent souvent vides (chargées à part par le
+            // site) : sans cela, les jeux qu'elles contiennent n'étaient jamais trouvés.
+            const int remaining = kMaximumRequests - requests;
+            if (remaining > 0)
+                requests += static_cast<int>(ResolveLazyCollections(
+                    root, false, nullptr, std::min<size_t>(kMaximumWidgetsPerPage, static_cast<size_t>(remaining)),
+                    keep_going));
 
             std::vector<Game> batch;
             const size_t queued_before = queue.size();
@@ -1311,11 +1330,16 @@ void LunaClient::ExploreCatalog(std::set<std::string> known,
                         continue;
                     }
                     Game game = ExtractGame(child);
+                    // Tuile de jeu identifiée (ASIN ou fiche « game/… ») : gardée même sans visuel
+                    // (jaquette LunaNX par défaut). Son lien mène à une fiche, jamais explorée.
+                    const bool identified = !game.asin.empty() || game.page_uri.rfind("game/", 0) == 0;
                     const bool playable = LooksLikeGameTile(type, game) && CanOpen(game) &&
-                                          (!game.image_portrait.empty() || !game.image_landscape.empty());
+                                          (identified || !game.image_portrait.empty() ||
+                                           !game.image_landscape.empty());
                     if (!playable)
                     {
-                        enqueue(child);
+                        if (!identified)
+                            enqueue(child);
                         continue;
                     }
                     if (InsertGameKeys(known, game))
@@ -1339,8 +1363,72 @@ void LunaClient::ExploreCatalog(std::set<std::string> known,
         }
     }
     LogRuntimeEvent("luna", "explore_done",
-                    "pages=" + std::to_string(pages) + " newGames=" + std::to_string(found) +
-                        " remainingLinks=" + std::to_string(queue.size()));
+                    "pages=" + std::to_string(pages) + " requests=" + std::to_string(requests) +
+                        " newGames=" + std::to_string(found) + " remainingLinks=" + std::to_string(queue.size()));
+}
+
+std::vector<Game> LunaClient::SearchGames(const std::string& query) const
+{
+    std::vector<Game> results;
+    if (query.empty())
+        return results;
+    // Mêmes paramètres que le client web Luna : 12 jeux par page, tri par pertinence.
+    constexpr int kPageSize = 12;
+    constexpr int kMaximumPages = 3;
+    std::set<std::string> seen;
+    for (int index = 0; index < kMaximumPages; ++index)
+    {
+        auto search = Adopt(json_pack("{s:s, s:s, s:{s:i, s:i}}", "query", query.c_str(), "sort", "RELEVANCE",
+                                      "pagination", "pageSize", kPageSize, "startIndex", index * kPageSize));
+        if (!search)
+            break;
+        JsonPtr page(nullptr, &json_decref);
+        try
+        {
+            page = Adopt(GetPage(json_pack("{s:s, s:s}", "pageUri", "search", "pageId", "default"), {},
+                                 json_incref(search.get())));
+        }
+        catch (const SignInRequired&)
+        {
+            throw;
+        }
+        catch (const LunaError&)
+        {
+            // Pages suivantes refusées : les résultats déjà reçus restent valables.
+            if (index == 0)
+                throw;
+            break;
+        }
+        ResolveLazyCollections(page.get(), false, search.get(), 8);
+        // Aucun résultat : Luna propose alors d'autres jeux, qui ne correspondent pas à la saisie.
+        bool no_results = false;
+        Walk(page.get(), [&no_results](json_t* node) {
+            if (Str(node, "type") == "SEARCH_NO_RESULTS_FOUND")
+                no_results = true;
+        });
+        if (no_results)
+            break;
+        const auto shelves = ParseShelfPage(page.get(), {});
+        // Les résultats sont affichés en grille ; sans grille, toutes les rangées de jeux comptent.
+        const auto is_grid = [](const Shelf& shelf) { return shelf.row_type.find("GRID") != std::string::npos; };
+        const bool has_grid = std::any_of(shelves.begin(), shelves.end(), is_grid);
+        size_t added = 0;
+        for (const auto& shelf : shelves)
+        {
+            if (shelf.recently_played || (has_grid && !is_grid(shelf)))
+                continue;
+            for (const auto& game : shelf.games)
+                if (CanOpen(game) && InsertGameKeys(seen, game))
+                {
+                    results.push_back(game);
+                    ++added;
+                }
+        }
+        if (added < static_cast<size_t>(kPageSize))
+            break;
+    }
+    LogRuntimeEvent("luna", "search", "results=" + std::to_string(results.size()));
+    return results;
 }
 
 Game LunaClient::FetchGameDetail(const Game& input) const

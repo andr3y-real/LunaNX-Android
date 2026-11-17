@@ -68,6 +68,10 @@ class LunaClient
     void ExploreCatalog(std::set<std::string> known,
                         const std::function<void(std::vector<Game>)>& on_games,
                         const std::function<bool()>& keep_going) const;
+    // Recherche Luna (même requête que la page « search » du site) : jeux trouvés par le
+    // serveur, dans l'ordre de pertinence de Luna, y compris ceux absents du catalogue local.
+    // Vide si Luna ne trouve rien ; lève LunaError si la première page est refusée.
+    std::vector<Game> SearchGames(const std::string& query) const;
     // Complète un jeu avec sa fiche (description, playToken).
     Game FetchGameDetail(const Game& game) const;
 
@@ -92,8 +96,14 @@ class LunaClient
     void SelectProfile(const Status& status);
     // Page Luna désignée soit par un contexte (pageId/pageUri), soit par le jeton de service
     // porté par l'action d'un widget (c'est ainsi que le site web navigue).
-    json_t* GetPage(json_t* page_context, const std::string& service_token = {}) const;
-    void ResolveLazyCollections(json_t* page, bool strict_recent = false) const;
+    // `search_context` (adopté) : contexte de recherche du site, joint à la requête.
+    json_t* GetPage(json_t* page_context, const std::string& service_token = {},
+                    json_t* search_context = nullptr) const;
+    // Charge les collections différées (getWidget) de la page ; renvoie le nombre d'appels.
+    // `search_context` (non adopté) est recopié dans chaque requête ; `keep_going` interrompt.
+    size_t ResolveLazyCollections(json_t* page, bool strict_recent = false, json_t* search_context = nullptr,
+                                  size_t maximum_widgets = 16,
+                                  const std::function<bool()>& keep_going = {}) const;
     void ApplyMarketDefaults();
     std::string market_locale_;
     // Liens de navigation repérés par FetchShelves, point de départ de ExploreCatalog.

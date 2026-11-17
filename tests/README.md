@@ -82,6 +82,18 @@ verify the header at 720p, Wi-Fi/LAN/offline transitions, Luna avatar loading, t
 swipes, sign-out/reconnect, and a complete Amazon code confirmation followed by gameplay.
 
 
+## Search matching
+
+`search_match_test.cpp` checks library search scoring: exact title, title start, word start,
+words in any order, missing or extra spaces, Latin accents and ligatures, ™/®/© symbols,
+typographic punctuation, other scripts, empty input and truncated UTF-8. Typos are left to
+Luna's own search. It has no dependencies beyond the standard library:
+
+```sh
+c++ -std=c++20 -Wall -Wextra -Werror -Iapp/src tests/search_match_test.cpp -o /tmp/lunanx-search-test
+/tmp/lunanx-search-test
+```
+
 ## Catalog artwork
 
 `catalog_artwork_test.cpp` checks late portrait artwork after a featured banner,

@@ -77,7 +77,12 @@ class LibraryView : public brls::Box
     void UpdateSectionHeader();
     void UpdateHeaderButtons();
     void BeginSearch();
+    void ApplySearch(const std::string& text);
+    void StartOnlineSearch(const std::string& query);
     void ClearSearch();
+    void RestoreStatus();
+    // Vrai si la bibliothèque est l'écran au premier plan (pas de réglages ni de menu ouverts).
+    bool IsFrontmost() const;
     void ShowMainMenu();
     void ShowAccount();
     void OpenSettings();
@@ -149,7 +154,12 @@ class LibraryView : public brls::Box
     std::vector<luna::Game> section_games_;
     size_t page_ = 0;
     std::string selected_id_;
+    // Recherche : porte sur tout le catalogue (quelle que soit la rubrique), complétée par
+    // la recherche Luna (jeux absents du catalogue, fautes de frappe).
     std::string search_query_;
+    std::vector<luna::Game> search_results_;
+    uint64_t search_generation_ = 0;
+    bool search_loading_ = false;
     size_t premium_count_ = 0;
     brls::Label* list_heading_ = nullptr;
 

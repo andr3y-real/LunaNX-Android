@@ -8,7 +8,7 @@
 
 ## 1. Copy the file
 
-1. Download `LunaNX.nro` from the [Releases](https://github.com/kazar-root/LunaNX/releases/tag/v3.0) page.
+1. Download `LunaNX.nro` from the [Releases](https://github.com/kazar-root/LunaNX/releases/tag/v3.1) page.
 2. Optional: check the file with the SHA-256 checksum given in the release notes:
    ```bash
    shasum -a 256 LunaNX.nro

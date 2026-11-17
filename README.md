@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="resources/img/lunanx_logo.png" width="260" alt="LunaNX 3.0 logo">
+  <img src="resources/img/lunanx_logo.png" width="260" alt="LunaNX 3.1 logo">
 </p>
 
-<h1 align="center">LunaNX 3.0</h1>
+<h1 align="center">LunaNX 3.1</h1>
 <p align="center"><strong>Amazon Luna cloud gaming on Nintendo Switch</strong></p>
 
 <p align="center">
-  <a href="https://github.com/kazar-root/LunaNX/releases/tag/v3.0"><img src="https://img.shields.io/badge/release-v3.0-8955ff" alt="Release v3.0"></a>
+  <a href="https://github.com/kazar-root/LunaNX/releases/tag/v3.1"><img src="https://img.shields.io/badge/release-v3.1-8955ff" alt="Release v3.1"></a>
   <img src="https://img.shields.io/badge/platform-Nintendo%20Switch%20Homebrew-e60012" alt="Nintendo Switch homebrew">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0 license"></a>
 </p>
@@ -17,13 +17,24 @@ with Joy-Con, a Pro Controller or the console in handheld mode.
 
 **Created by KazaR-RooT.** This is the official LunaNX repository.
 
-**[Download LunaNX 3.0](https://github.com/kazar-root/LunaNX/releases/tag/v3.0)** ·
+**[Download LunaNX 3.1](https://github.com/kazar-root/LunaNX/releases/tag/v3.1)** ·
 [Installation guide](INSTALLATION.md) · [Release notes](RELEASE_NOTES.md) · [Report an issue](https://github.com/kazar-root/LunaNX/issues)
 
 > LunaNX is an unofficial community project, independent of Amazon and Nintendo. You need
 > your own Amazon account with access to Luna. Available games depend on your country and subscription.
 
 ![LunaNX 3.0 library and Top 10](docs/screenshots/v3/library.jpg)
+
+## What's new in 3.1
+
+- **Searching no longer closes LunaNX.** **+** and **−** no longer quit from the library. The
+  Switch keyboard confirms with **+**, which could still be held when the results appeared.
+  Quit with **Main menu → Quit** or the HOME button.
+- **Search finds every game.** It covers the whole catalog instead of only the section on screen,
+  and also asks Luna's own search service, so games that were not loaded yet and titles typed
+  with a typo are found. Accents, case, punctuation, ™/® symbols and word order are ignored.
+- **More complete All games.** Background exploration now loads the rows that Luna sends
+  separately, and games found by a search are added to All games.
 
 ## What's new in 3.0
 
@@ -69,7 +80,7 @@ languages; individual captures may show different language settings.
 
 ## Get started
 
-1. Download **LunaNX.nro** from the [3.0 release](https://github.com/kazar-root/LunaNX/releases/tag/v3.0).
+1. Download **LunaNX.nro** from the [3.1 release](https://github.com/kazar-root/LunaNX/releases/tag/v3.1).
 2. Copy it to **sdmc:/switch/LunaNX/LunaNX.nro**.
 3. Open the Homebrew Menu in **application mode**: hold **R** while launching a game, then select LunaNX.
 4. Choose your country and **Simplified sign-in (Amazon code)**. Confirm the code on Amazon;
@@ -91,13 +102,14 @@ password only on the official Amazon page shown by LunaNX.
 | Previous / next page | **L / R** |
 | Previous / next section | **ZL / ZR** |
 | Main menu / search / account | Labeled header buttons |
+| Search | **Search** button: the whole catalog, plus Luna's own search |
 | Settings | Header button or **X** |
 | Refresh library | **Y** |
-| Clear search / return to All games | **B** |
+| Close the search / return to All games | **B** |
 | Leave a running game | **ZL + ZR + −** together |
 | Toggle battery, clock, bitrate and FPS | **+ and −** together during gameplay |
 | Technical overlay, if enabled in Settings | **L3 + R3** |
-| Quit LunaNX from the library | **−** or **+** |
+| Quit LunaNX | **Main menu → Quit**, or the HOME button (**+** and **−** never quit) |
 
 ## Features and compatibility
 

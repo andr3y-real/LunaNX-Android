@@ -17,7 +17,8 @@ This identifies the project, not a console, player or Amazon account.
 - **Settings → Creator and origin** displays only **KazaR-RooT**. Offline tools expose the
   detailed public information. This mechanism does not send telemetry or identify users.
 - `provenance/source-manifest.json` describes the current source tree;
-  `provenance/releases/3.0.json` records the complete NRO digest outside the binary.
+  `provenance/releases/<version>.json` (3.1.json for this release) records the complete NRO
+  digest outside the binary.
 
 Third-party authors and licenses remain listed in `THIRD_PARTY_NOTICES.md`. A match involving
 a dependency does not attribute that dependency to KazaR-RooT.
