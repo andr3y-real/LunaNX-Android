@@ -647,7 +647,9 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeStatus)(JNIEnv* env, 
         std::to_string(video.codec_pending),
         std::to_string(video.codec_age_ms),
         std::to_string(video.non_picture_units),
-        std::to_string(video.waiting_for_keyframe_drops)
+        std::to_string(video.waiting_for_keyframe_drops),
+        std::to_string(video.rtp_gaps_recovered),
+        std::to_string(video.rtp_gaps_expired)
     });
 }
 

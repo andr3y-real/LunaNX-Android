@@ -87,6 +87,8 @@ class LunaStreamSession
         uint64_t codec_age_ms = 0;
         uint64_t non_picture_units = 0;
         uint64_t waiting_for_keyframe_drops = 0;
+        uint64_t rtp_gaps_recovered = 0;
+        uint64_t rtp_gaps_expired = 0;
     };
     AndroidVideoStats android_video_stats();
     bool set_android_surface(ANativeWindow* window);

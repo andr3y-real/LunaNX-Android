@@ -859,6 +859,8 @@ static int peer_connection_loop_internal(PeerConnection* pc,
         }
       }
 
+      if (pc->vrtp_decoder.reorder_buffered_packets != 0)
+        rtp_decoder_expire_gap(&pc->vrtp_decoder, ports_get_monotonic_time_ms());
       agent_rtt_probe_tick(&pc->agent);
       peer_connection_maybe_send_receiver_report(pc);
 

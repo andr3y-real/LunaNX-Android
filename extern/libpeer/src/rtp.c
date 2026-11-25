@@ -775,12 +775,16 @@ static int rtp_decoder_decode_reordered(RtpDecoder* rtp_decoder, const uint8_t* 
     rtp_decoder->reorder_expected_sequence = sequence;
   }
 
-  const uint32_t now_ms = ports_get_epoch_time();
+  const uint32_t now_ms = ports_get_monotonic_time_ms();
   int16_t distance = (int16_t)(sequence - rtp_decoder->reorder_expected_sequence);
   if (distance < 0) {
     rtp_decoder->late_packets_dropped++;
     return 0;
   }
+  const size_t incoming_slot = sequence % RTP_REORDER_WINDOW;
+  if (rtp_decoder->reorder_used[incoming_slot] &&
+      rtp_decoder->reorder_sequences[incoming_slot] == sequence)
+    return 0;
   if (distance > 0 && rtp_decoder->reorder_gap_started_ms == 0) {
     rtp_decoder->reorder_gap_started_ms = now_ms;
     rtp_decoder->reorder_gap_wait_counted = 0;
@@ -851,6 +855,9 @@ static int rtp_decoder_decode_reordered(RtpDecoder* rtp_decoder, const uint8_t* 
     distance = (int16_t)(sequence - rtp_decoder->reorder_expected_sequence);
   }
 
+  if (distance < 0)
+    return 0;
+
   if (distance == 0) {
     if (rtp_decoder->reorder_gap_started_ms != 0)
       rtp_decoder->reorder_gap_recoveries++;
@@ -876,6 +883,45 @@ static int rtp_decoder_decode_reordered(RtpDecoder* rtp_decoder, const uint8_t* 
   rtp_decoder->reorder_buffered_packets++;
   rtp_decoder->reordered_packets++;
   return 0;
+}
+
+void rtp_decoder_expire_gap(RtpDecoder* rtp_decoder, uint32_t now_ms) {
+  if (rtp_decoder->reorder_buffered_packets == 0)
+    return;
+
+  const uint32_t age_ms = now_ms - rtp_decoder->reorder_gap_started_ms;
+  if (age_ms < rtp_decoder->reorder_gap_hold_ms)
+    return;
+
+  const uint16_t expected = rtp_decoder->reorder_expected_sequence;
+  uint16_t nearest = RTP_REORDER_WINDOW;
+  uint16_t furthest = 0;
+  for (size_t slot = 0; slot < RTP_REORDER_WINDOW; ++slot) {
+    if (!rtp_decoder->reorder_used[slot])
+      continue;
+    const uint16_t distance = (uint16_t)(rtp_decoder->reorder_sequences[slot] - expected);
+    if (distance >= RTP_REORDER_WINDOW)
+      continue;
+    if (distance < nearest)
+      nearest = distance;
+    if (distance > furthest)
+      furthest = distance;
+  }
+
+  // A burst gets the same extra time as the incoming-packet path. Small gaps
+  // must expire by elapsed time even if no more video packets are arriving.
+  if (nearest == RTP_REORDER_WINDOW ||
+      (furthest >= RTP_RECOVERY_BURST_GAP_DISTANCE &&
+       age_ms < rtp_decoder->reorder_burst_gap_hold_ms))
+    return;
+
+  if (nearest != 0) {
+    rtp_decoder->reorder_expected_sequence = (uint16_t)(expected + nearest);
+    rtp_decoder->forced_sequence_skips += nearest;
+    rtp_decoder->reorder_gap_expirations++;
+  }
+  rtp_decoder_drain_reorder_buffer(rtp_decoder);
+  rtp_decoder_refresh_gap_clock(rtp_decoder, now_ms);
 }
 
 void rtp_decoder_set_reorder_grace_ms(RtpDecoder* rtp_decoder,

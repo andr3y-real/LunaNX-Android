@@ -177,6 +177,8 @@ void rtp_decoder_cleanup(RtpDecoder* rtp_decoder);
 
 int rtp_decoder_decode(RtpDecoder* rtp_decoder, const uint8_t* data, size_t size);
 
+void rtp_decoder_expire_gap(RtpDecoder* rtp_decoder, uint32_t now_ms);
+
 void rtp_decoder_set_reorder_grace_ms(RtpDecoder* rtp_decoder, uint32_t hold_ms);
 void rtp_decoder_set_reorder_burst_grace_ms(RtpDecoder* rtp_decoder,
                                             uint32_t hold_ms);

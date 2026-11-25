@@ -19,6 +19,8 @@ final class PlaybackReport {
     private long drops;
     private long nonPictureUnits;
     private long waitingForKeyframeDrops;
+    private long rtpGapsRecovered;
+    private long rtpGapsExpired;
     private long resets;
     private long codecErrors;
     private long queueFull;
@@ -59,6 +61,8 @@ final class PlaybackReport {
         drops = newDrops;
         nonPictureUnits = Long.parseLong(status[14]);
         waitingForKeyframeDrops = newWaitingDrops;
+        rtpGapsRecovered = Long.parseLong(status[16]);
+        rtpGapsExpired = Long.parseLong(status[17]);
         resets = newResets;
         codecErrors = newCodecErrors;
         queueFull = newQueueFull;
@@ -107,6 +111,8 @@ final class PlaybackReport {
             out.append("Janelas de ~1 s sem decodificação: ").append(zeroDecodedWindows).append('\n');
         }
         out.append("Unidades RTP danificadas: ").append(drops).append('\n');
+        out.append("Lacunas RTP recuperadas / expiradas: ").append(rtpGapsRecovered)
+            .append(" / ").append(rtpGapsExpired).append('\n');
         out.append("Unidades H.264 sem imagem: ").append(nonPictureUnits).append('\n');
         out.append("Quadros descartados aguardando imagem-chave: ").append(waitingForKeyframeDrops).append('\n');
         out.append("Resets do decoder: ").append(resets)

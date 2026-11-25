@@ -1142,7 +1142,8 @@ LunaStreamSession::AndroidVideoStats LunaStreamSession::android_video_stats()
             static_cast<uint64_t>(arrival_jitter_us_ / 1000),
             decoder_ ? decoder_->codec_pending() : 0,
             decoder_ ? decoder_->codec_age_us(NowUs()) / 1000 : 0,
-            rtp.non_picture_access_units, waiting_for_keyframe_drops_};
+            rtp.non_picture_access_units, waiting_for_keyframe_drops_,
+            rtp.reorder_gap_recoveries, rtp.reorder_gap_expirations};
 }
 #endif
 
