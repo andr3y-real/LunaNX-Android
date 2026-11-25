@@ -109,13 +109,16 @@ AndroidVideoDecoder::Signals AndroidVideoDecoder::signals()
     return {!inputs_.empty(), !outputs_.empty(), codec_error_};
 }
 
-int AndroidVideoDecoder::drain_output(uint64_t generation)
+AndroidVideoDecoder::OutputProgress AndroidVideoDecoder::drain_output(uint64_t generation)
 {
     std::lock_guard lock(mutex_);
+    OutputProgress progress;
     if (!started_ || generation != output_generation_)
-        return -1;
+    {
+        progress.error = true;
+        return progress;
+    }
 
-    int frames = 0;
     for (int count = 0; count < 16; ++count)
     {
         Output output {};
@@ -129,19 +132,29 @@ int AndroidVideoDecoder::drain_output(uint64_t generation)
         if (output.info.flags & AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG)
         {
             if (AMediaCodec_releaseOutputBuffer(codec_, output.index, false) != AMEDIA_OK)
-                return -1;
+            {
+                progress.error = true;
+                break;
+            }
             continue;
         }
 
         const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
             Clock::now().time_since_epoch()).count();
         const auto when_ns = presentation_clock_.schedule(output.info.presentationTimeUs * 1000, now_ns);
-        if (AMediaCodec_releaseOutputBufferAtTime(codec_, output.index, when_ns) != AMEDIA_OK)
-            return -1;
+        const auto released = when_ns ? AMediaCodec_releaseOutputBufferAtTime(codec_, output.index, *when_ns)
+                                      : AMediaCodec_releaseOutputBuffer(codec_, output.index, false);
+        if (released != AMEDIA_OK)
+        {
+            progress.error = true;
+            break;
+        }
         codec_queue_.produced(output.info.presentationTimeUs);
-        ++frames;
+        ++progress.decoded;
+        if (when_ns)
+            ++progress.scheduled;
     }
-    return frames;
+    return progress;
 }
 
 bool AndroidVideoDecoder::submit_decode_unit(

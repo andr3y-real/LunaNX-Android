@@ -2,29 +2,36 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 
 class VideoPresentationClock
 {
 public:
     explicit VideoPresentationClock(int fps)
-        : frame_ns_(1'000'000'000 / std::max(1, fps)) {}
+        : frame_ns_((1'000'000'000LL + std::max(1, fps) - 1) / std::max(1, fps)) {}
 
-    int64_t schedule(int64_t media_ns, int64_t now_ns)
+    std::optional<int64_t> schedule(int64_t media_ns, int64_t now_ns)
     {
-        const int64_t target = local_anchor_ns_ + (media_ns - media_anchor_ns_);
         const int64_t latest = now_ns + 2 * frame_ns_;
-        const bool restart = !anchored_ || media_ns <= last_media_ns_ || target < now_ns;
-        last_media_ns_ = media_ns;
-        if (!restart && target <= latest)
-            return last_output_ns_ = target;
+        const int64_t earliest = anchored_ ? std::max(now_ns, last_output_ns_ + frame_ns_) : now_ns;
+        // SurfaceView can collapse frames scheduled for the same VSYNC. If all
+        // slots within the latency budget are claimed, return the buffer unused.
+        if (earliest > latest)
+            return std::nullopt;
 
-        const int64_t presentation = restart
-            ? std::max(now_ns + frame_ns_, std::min(last_output_ns_, latest))
-            : latest;
-        anchored_ = true;
-        media_anchor_ns_ = media_ns;
-        local_anchor_ns_ = presentation;
-        return last_output_ns_ = presentation;
+        const int64_t target = local_anchor_ns_ + (media_ns - media_anchor_ns_);
+        const bool restart = !anchored_ || media_ns <= last_media_ns_ || target < now_ns;
+        const int64_t presentation = restart ? std::max(earliest, now_ns + frame_ns_)
+                                             : std::clamp(target, earliest, latest);
+        if (restart || target > latest)
+        {
+            anchored_ = true;
+            media_anchor_ns_ = media_ns;
+            local_anchor_ns_ = presentation;
+        }
+        last_media_ns_ = media_ns;
+        last_output_ns_ = presentation;
+        return presentation;
     }
 
     void reset() { anchored_ = false; last_output_ns_ = 0; }

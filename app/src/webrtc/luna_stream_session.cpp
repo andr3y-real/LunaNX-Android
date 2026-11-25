@@ -719,19 +719,19 @@ void LunaStreamSession::decoder_loop()
             resets_without_output = 0;
         }
 
-        const int decoded = !reset_requested && !signals.error && signals.output
-            ? decoder_->drain_output(generation) : 0;
-        const bool codec_error = signals.error || decoded < 0 ||
+        const auto output = !reset_requested && !signals.error && signals.output
+            ? decoder_->drain_output(generation) : AndroidVideoDecoder::OutputProgress {};
+        const bool codec_error = signals.error || output.error ||
             (!unit.data.empty() && !decoder_->submit_decode_unit(
                 unit.data.data(), static_cast<int>(unit.data.size()), unit.rtp_timestamp, generation));
 
         if (generation != video_surface_generation_.load())
             continue;
-        if (decoded > 0)
+        if (output.decoded > 0)
         {
             last_decoded_frame_at_us_.store(NowUs(), std::memory_order_release);
-            presented_frames_.fetch_add(decoded, std::memory_order_relaxed);
-            if (frames_decoded_.fetch_add(decoded) == 0)
+            presented_frames_.fetch_add(output.scheduled, std::memory_order_relaxed);
+            if (frames_decoded_.fetch_add(output.decoded) == 0)
                 AppendStreamLog("DECODE first_frame");
             resets_without_output = 0;
         }

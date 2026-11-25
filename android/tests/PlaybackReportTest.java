@@ -7,6 +7,7 @@ public final class PlaybackReportTest {
         String[] status = {"3", "texto privado", "0", "0", "0", "0", "0",
             "0", "3", "4", "0", "0", "0", "6", "0", "0", "0", "0"};
         report.sample(100, 3, 0, 0, 0, status);
+        status[3] = "56";
         status[6] = "2";
         status[7] = "1";
         status[13] = "90";
@@ -19,6 +20,8 @@ public final class PlaybackReportTest {
         String summary = report.format(2300);
         require(summary, "60.0 / 30.0");
         require(summary, "8.0 Mb/s");
+        require(summary, "Quadros programados para a tela: 56");
+        require(summary, "cadência na saída: 4");
         require(summary, "Janelas de ~1 s sem decodificação: 1");
         require(summary, "Resets do decoder: 1");
         require(summary, "RTP +2");

@@ -16,6 +16,7 @@ final class PlaybackReport {
     private long previousDecoded;
     private long received;
     private long decoded;
+    private long scheduled;
     private long drops;
     private long nonPictureUnits;
     private long waitingForKeyframeDrops;
@@ -68,6 +69,7 @@ final class PlaybackReport {
         queueFull = newQueueFull;
         this.received = received;
         this.decoded = decoded;
+        scheduled = Long.parseLong(status[3]);
         maximumQueueMs = Math.max(maximumQueueMs, Long.parseLong(status[8]));
         maximumJitterMs = Math.max(maximumJitterMs, Long.parseLong(status[9]));
         maximumCodecAgeMs = Math.max(maximumCodecAgeMs, Long.parseLong(status[13]));
@@ -102,6 +104,8 @@ final class PlaybackReport {
         out.append("Chegou a transmitir: ").append(reachedStreaming ? "sim" : "não").append('\n');
         if (samples == 0) return out.append("Sem amostras de vídeo nesta partida.").toString();
         out.append("Quadros recebidos / decodificados: ").append(received).append(" / ").append(decoded).append('\n');
+        out.append("Quadros programados para a tela: ").append(scheduled).append('\n');
+        out.append("Quadros descartados por cadência na saída: ").append(Math.max(0, decoded - scheduled)).append('\n');
         if (measuredMs > 0) {
             out.append(String.format(Locale.ROOT, "FPS médio recebido / decodificado: %.1f / %.1f%n",
                 measuredReceived * 1000.0 / measuredMs, measuredDecoded * 1000.0 / measuredMs));

@@ -29,7 +29,13 @@ public:
     size_t codec_pending() const { return codec_queue_.count(); }
     uint64_t codec_age_us(uint64_t now) const { return codec_queue_.age_us(now); }
     bool submit_decode_unit(const uint8_t* data, int size, uint32_t timestamp, uint64_t generation);
-    int drain_output(uint64_t generation);
+    struct OutputProgress
+    {
+        int decoded = 0;
+        int scheduled = 0;
+        bool error = false;
+    };
+    OutputProgress drain_output(uint64_t generation);
     bool set_output_window(ANativeWindow* window, uint64_t generation);
     bool reset_stream(uint64_t generation);
     void cleanup();
