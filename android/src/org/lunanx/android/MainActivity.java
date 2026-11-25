@@ -1644,26 +1644,17 @@ public final class MainActivity extends Activity {
     }
 
     private final class PosterImage extends ImageView {
-        private boolean bannerFallback;
-
         PosterImage() {
             super(MainActivity.this);
+            setScaleType(ScaleType.CENTER_CROP);
             setBackground(rounded(0xff2b223d, 12));
             setClipToOutline(true);
-        }
-
-        void applyAspect(Bitmap bitmap) {
-            setScaleType(bannerFallback || (bitmap != null && bitmap.getWidth() >= bitmap.getHeight())
-                ? ScaleType.FIT_CENTER : ScaleType.CENTER_CROP);
         }
     }
 
     private void bindPoster(PosterImage view, String[] rows, int offset) {
         String url = rows[offset + COVER];
-        view.bannerFallback = url.isEmpty();
-        if (view.bannerFallback) url = rows[offset + BANNER_FALLBACK];
-        view.applyAspect(covers.get(url));
-        bindCover(view, url);
+        bindCover(view, url.isEmpty() ? rows[offset + BANNER_FALLBACK] : url);
     }
 
     private final class PosterCard extends FrameLayout {
@@ -1761,7 +1752,6 @@ public final class MainActivity extends Activity {
     }
 
     private void revealArtwork(ImageView view, Bitmap artwork) {
-        if (view instanceof PosterImage) ((PosterImage) view).applyAspect(artwork);
         view.setImageBitmap(artwork);
         if (!view.isAttachedToWindow() || !ValueAnimator.areAnimatorsEnabled()) return;
         view.setAlpha(0.3f);
