@@ -1939,43 +1939,54 @@ public final class MainActivity extends Activity {
         });
     }
 
+    // Classic touch skin geometry adapted from OpenNOW Android (Zortos, MIT).
     private View touchOverlay() {
         FrameLayout panel = new FrameLayout(this);
-        LinearLayout left = new LinearLayout(this);
-        left.setGravity(Gravity.BOTTOM);
-        left.addView(new TouchStick(true), new LinearLayout.LayoutParams(dp(100), dp(100)));
-        LinearLayout leftButtons = new LinearLayout(this);
-        leftButtons.setOrientation(LinearLayout.VERTICAL);
-        leftButtons.addView(padRow(new String[]{"LB", "LT", "↖"}, new int[]{0x100, TOUCH_LT, 0x20}));
-        leftButtons.addView(padRow(new String[]{"↑"}, new int[]{1}));
-        leftButtons.addView(padRow(new String[]{"←", "↓", "→"}, new int[]{4, 2, 8}));
-        left.addView(leftButtons);
-        panel.addView(left, floating(-2, -2, Gravity.BOTTOM | Gravity.START, 8));
-
-        LinearLayout right = new LinearLayout(this);
-        right.setGravity(Gravity.BOTTOM);
-        LinearLayout rightButtons = new LinearLayout(this);
-        rightButtons.setOrientation(LinearLayout.VERTICAL);
-        rightButtons.addView(padRow(new String[]{"↗", "RT", "RB"}, new int[]{0x10, TOUCH_RT, 0x200}));
-        rightButtons.addView(padRow(new String[]{"Y"}, new int[]{0x8000}));
-        rightButtons.addView(padRow(new String[]{"X", "A", "B"}, new int[]{0x4000, 0x1000, 0x2000}));
-        right.addView(rightButtons);
-        right.addView(new TouchStick(false), new LinearLayout.LayoutParams(dp(100), dp(100)));
-        panel.addView(right, floating(-2, -2, Gravity.BOTTOM | Gravity.END, 8));
+        panel.setMotionEventSplittingEnabled(true);
+        for (boolean left : new boolean[]{true, false}) {
+            LinearLayout side = new LinearLayout(this);
+            side.setOrientation(LinearLayout.VERTICAL);
+            side.setGravity(Gravity.CENTER_HORIZONTAL);
+            side.setMotionEventSplittingEnabled(true);
+            side.addView(left
+                ? padRow(new String[]{"LT", "LB", "L3"}, new int[]{TOUCH_LT, 0x100, 0x40}, true)
+                : padRow(new String[]{"R3", "RB", "RT"}, new int[]{0x80, 0x200, TOUCH_RT}, true));
+            LinearLayout primary = new LinearLayout(this);
+            primary.setGravity(Gravity.CENTER_VERTICAL);
+            primary.setMotionEventSplittingEnabled(true);
+            TouchStick stick = new TouchStick(left);
+            if (left) primary.addView(stick, new LinearLayout.LayoutParams(dp(86), dp(86)));
+            if (left) primary.addView(new TouchDpad(), new LinearLayout.LayoutParams(dp(98), dp(98)));
+            else {
+                LinearLayout face = new LinearLayout(this);
+                face.setOrientation(LinearLayout.VERTICAL);
+                face.setMotionEventSplittingEnabled(true);
+                face.addView(padRow(new String[]{"Y"}, new int[]{0x8000}, false));
+                face.addView(padRow(new String[]{"X", "B"}, new int[]{0x4000, 0x2000}, false));
+                face.addView(padRow(new String[]{"A"}, new int[]{0x1000}, false));
+                primary.addView(face);
+            }
+            if (!left) primary.addView(stick, new LinearLayout.LayoutParams(dp(86), dp(86)));
+            side.addView(primary);
+            panel.addView(side, floating(-2, -2, Gravity.BOTTOM | (left ? Gravity.START : Gravity.END), 10));
+        }
+        panel.addView(padRow(new String[]{"View", "Menu"}, new int[]{0x20, 0x10}, true),
+            floating(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 10));
         return panel;
     }
 
-    private LinearLayout padRow(String[] labels, int[] masks) {
+    private LinearLayout padRow(String[] labels, int[] masks, boolean shoulder) {
         LinearLayout row = new LinearLayout(this);
         row.setGravity(Gravity.CENTER);
+        row.setMotionEventSplittingEnabled(true);
         for (int i = 0; i < labels.length; i++) {
             int mask = masks[i];
-            TextView key = text(labels[i], 15, Color.WHITE);
+            TextView key = text(labels[i], shoulder ? 12 : 16, Color.WHITE);
             key.setGravity(Gravity.CENTER);
-            android.graphics.drawable.StateListDrawable keyBackground = new android.graphics.drawable.StateListDrawable();
-            keyBackground.addState(new int[]{android.R.attr.state_pressed}, rounded(0xee58448e, 24));
-            keyBackground.addState(new int[]{}, rounded(mask == 0x1000 ? 0xa64a367e : 0x951c2030, 24));
-            key.setBackground(keyBackground);
+            android.graphics.drawable.StateListDrawable background = new android.graphics.drawable.StateListDrawable();
+            background.addState(new int[]{android.R.attr.state_pressed}, padShape(0xe56d4ba5));
+            background.addState(new int[]{}, padShape(0x66181724));
+            key.setBackground(background);
             key.setOnTouchListener((view, event) -> {
                 switch (event.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
@@ -1992,11 +2003,94 @@ public final class MainActivity extends Activity {
                 publishPad();
                 return true;
             });
-            LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(dp(40), dp(40));
-            layout.setMargins(dp(2), dp(2), dp(2), dp(2));
+            LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(dp(shoulder ? 51 : 42),
+                dp(shoulder ? 35 : 42));
+            layout.setMargins(dp(3), dp(1), dp(3), dp(1));
             row.addView(key, layout);
         }
         return row;
+    }
+
+    private GradientDrawable padShape(int fill) {
+        GradientDrawable shape = rounded(fill, 30);
+        shape.setStroke(dp(1), 0xcce9ddff);
+        return shape;
+    }
+
+    private final class TouchDpad extends View {
+        private final Path cross = new Path();
+        private final Path active = new Path();
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private int directions;
+
+        TouchDpad() {
+            super(MainActivity.this);
+            setContentDescription("Direcional");
+        }
+
+        @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+            float arm = Math.min(width, height) / 3.1f;
+            float inset = dp(1);
+            cross.reset();
+            cross.addRoundRect((width - arm) / 2, inset, (width + arm) / 2, height - inset,
+                dp(7), dp(7), Path.Direction.CW);
+            Path horizontal = new Path();
+            horizontal.addRoundRect(inset, (height - arm) / 2, width - inset, (height + arm) / 2,
+                dp(7), dp(7), Path.Direction.CW);
+            cross.op(horizontal, Path.Op.UNION);
+        }
+
+        @Override protected void onDraw(Canvas canvas) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(0x66181724);
+            canvas.drawPath(cross, paint);
+            float width = getWidth(), height = getHeight();
+            float x = width / 2, y = height / 2;
+            canvas.save();
+            canvas.clipPath(cross);
+            paint.setColor(0xe56d4ba5);
+            int[] masks = {1, 8, 2, 4};
+            for (int mask : masks) {
+                if ((directions & mask) != 0) {
+                    active.rewind();
+                    active.moveTo(x, y);
+                    active.lineTo(0, 0);
+                    active.lineTo(width, 0);
+                    active.close();
+                    canvas.drawPath(active, paint);
+                }
+                canvas.rotate(90, x, y);
+            }
+            canvas.restore();
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(1));
+            paint.setColor(0xcce9ddff);
+            canvas.drawPath(cross, paint);
+        }
+
+        @Override public boolean onTouchEvent(MotionEvent event) {
+            int next = 0;
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                case MotionEvent.ACTION_MOVE:
+                    float x = (event.getX() - getWidth() / 2f) / getWidth();
+                    float y = (event.getY() - getHeight() / 2f) / getHeight();
+                    if (Math.abs(x) > 0.14f && Math.abs(x) >= 0.52f * Math.abs(y))
+                        next |= x < 0 ? 4 : 8;
+                    if (Math.abs(y) > 0.14f && Math.abs(y) >= 0.52f * Math.abs(x))
+                        next |= y < 0 ? 1 : 2;
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    break;
+                default: return true;
+            }
+            directions = next;
+            touchButtons = (touchButtons & ~15) | directions;
+            publishPad();
+            invalidate();
+            return true;
+        }
     }
 
     private final class TouchStick extends View {
@@ -2011,17 +2105,23 @@ public final class MainActivity extends Activity {
         }
         @Override protected void onDraw(android.graphics.Canvas canvas) {
             float cx = getWidth() / 2f, cy = getHeight() / 2f;
-            paint.setColor(0x951c2030);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(1));
+            paint.setColor(0xcce9ddff);
             canvas.drawCircle(cx, cy, Math.min(cx, cy) - dp(2), paint);
-            paint.setColor(0xa0ae9aff);
-            canvas.drawCircle(cx + x * dp(28), cy - y * dp(28), dp(16), paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(0x995f458a);
+            canvas.drawCircle(cx + x * dp(24), cy - y * dp(24), dp(17), paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setColor(0xcce9ddff);
+            canvas.drawCircle(cx + x * dp(24), cy - y * dp(24), dp(17), paint);
         }
         @Override public boolean onTouchEvent(MotionEvent event) {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                 case MotionEvent.ACTION_MOVE:
-                    float rawX = (event.getX() - getWidth() / 2f) / dp(34);
-                    float rawY = (getHeight() / 2f - event.getY()) / dp(34);
+                    float rawX = (event.getX() - getWidth() / 2f) / dp(28);
+                    float rawY = (getHeight() / 2f - event.getY()) / dp(28);
                     float scale = Math.max(1f, (float) Math.hypot(rawX, rawY));
                     x = rawX / scale;
                     y = rawY / scale;

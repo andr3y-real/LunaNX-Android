@@ -8,7 +8,7 @@ license and copyright notices; the full license texts are in the [licenses/](lic
 | FFmpeg (with averne's NVTEGRA branch) | H.264 decoding (built with `--enable-gpl`) | GPL-2.0-or-later | [FFmpeg-GPL-2.0.txt](licenses/FFmpeg-GPL-2.0.txt), [FFmpeg-LICENSE.md](licenses/FFmpeg-LICENSE.md) |
 | Moonlight-Switch (XITRIX) | Basis of the video decoder, renderer and frame queue | GPL-3.0 | [Moonlight-Switch-GPL-3.0.txt](licenses/Moonlight-Switch-GPL-3.0.txt) |
 | OpenNOW-Switch (OpenCloudGaming) | Switch adaptations of libpeer, audio pipeline, decode queue policy | MIT | [OpenNOW-Switch-MIT.txt](licenses/OpenNOW-Switch-MIT.txt) |
-| OpenNOW Android (Zortos) | Bounded video presentation timing adapted from the Android port | MIT | [OpenNOW-Android-MIT.txt](licenses/OpenNOW-Android-MIT.txt) |
+| OpenNOW Android (Zortos) | Bounded video presentation timing and Classic virtual controller shapes adapted from the Android port | MIT | [OpenNOW-Android-MIT.txt](licenses/OpenNOW-Android-MIT.txt) |
 | Borealis | User interface | Apache-2.0 | [Borealis-Apache-2.0.txt](licenses/Borealis-Apache-2.0.txt), [Borealis-NOTICE.txt](licenses/Borealis-NOTICE.txt) |
 | libpeer (sepfy) | WebRTC stack | MIT | [libpeer-MIT.txt](licenses/libpeer-MIT.txt) |
 | Mbed TLS | TLS / DTLS | Apache-2.0 | [MbedTLS-Apache-2.0.txt](licenses/MbedTLS-Apache-2.0.txt) |
