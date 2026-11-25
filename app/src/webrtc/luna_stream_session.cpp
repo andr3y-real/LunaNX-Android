@@ -925,11 +925,9 @@ void LunaStreamSession::maybe_recover_decode_stall()
     const bool stalled = last_decoded != 0 && now_us >= last_decoded &&
                          now_us - last_decoded >= 1'500'000;
 #ifdef __ANDROID__
-    const bool codec_stalled = decoder_ && decoder_->output_stalled(now_us);
-    if ((!stalled && !codec_stalled) || !video_surface_attached_.load() ||
-        last_video_arrival_us_ == 0 || now_us - last_video_arrival_us_ > 250'000 ||
-        now_us - video_run_start_us_ < 500'000 ||
-        (stalled && !codec_stalled && last_video_arrival_us_ <= last_decoded))
+    if (!stalled || !video_surface_attached_.load() ||
+        last_video_arrival_us_ <= last_decoded || now_us - last_video_arrival_us_ > 250'000 ||
+        now_us - video_run_start_us_ < 500'000)
         return;
 #else
     if (!stalled)
@@ -954,11 +952,7 @@ void LunaStreamSession::maybe_recover_decode_stall()
     if (!decoder_ || !decoder_->uses_hardware_frames())
         decoder_reset_requested_.store(true);
 #endif
-#ifdef __ANDROID__
-    request_keyframe(codec_stalled ? "codec_queue_stall" : "decode_stall");
-#else
     request_keyframe("decode_stall");
-#endif
 }
 
 void LunaStreamSession::maybe_recover_rtp_damage()

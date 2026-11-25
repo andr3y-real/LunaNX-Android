@@ -26,7 +26,6 @@ public:
 
     bool ready() const { return started_; }
     Signals signals();
-    bool output_stalled(uint64_t now) const { return codec_queue_.stalled(now); }
     size_t codec_pending() const { return codec_queue_.count(); }
     uint64_t codec_age_us(uint64_t now) const { return codec_queue_.age_us(now); }
     bool submit_decode_unit(const uint8_t* data, int size, uint32_t timestamp, uint64_t generation);
