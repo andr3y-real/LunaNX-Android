@@ -579,10 +579,18 @@ static int rtp_decode_h264(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size) {
          rtp_decoder->access_units_dropped);
   }
 
+  const uint8_t nalu_type = view.payload[0] & 0x1f;
   if (rtp_decoder->has_last_seq_number &&
       (uint16_t)(rtp_decoder->last_seq_number + 1) != view.seq_number) {
     rtp_decoder->sequence_gaps++;
-    rtp_decoder->au_damaged = 1;
+    if (rtp_decoder->au_started) {
+      rtp_decoder->au_damaged = 1;
+    } else if (nalu_type != FU_A || (view.payload_size >= 2 && (view.payload[1] & 0x80))) {
+      // The marker already closed the previous picture. Record the missing
+      // data separately when the next NAL starts cleanly. The FU parser
+      // accounts for a continuation with a missing start.
+      rtp_decoder->access_units_dropped++;
+    }
     if (rtp_decoder->fragment_started) {
       LOGW("RTP H264: sequence gap inside fragmented NALU (%u -> %u)",
            rtp_decoder->last_seq_number, view.seq_number);
@@ -593,8 +601,6 @@ static int rtp_decode_h264(RtpDecoder* rtp_decoder, uint8_t* buf, size_t size) {
   rtp_decoder->last_seq_number = view.seq_number;
   rtp_decoder->has_last_seq_number = 1;
   rtp_decoder_begin_access_unit(rtp_decoder, view.timestamp, view.ssrc);
-
-  const uint8_t nalu_type = view.payload[0] & 0x1f;
 
   if (nalu_type > 0 && nalu_type < STAP_A) {
     rtp_decoder->single_packets++;

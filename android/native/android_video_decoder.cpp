@@ -122,12 +122,14 @@ AndroidVideoDecoder::OutputProgress AndroidVideoDecoder::drain_output(uint64_t g
     for (int count = 0; count < 16; ++count)
     {
         Output output {};
+        bool output_waiting;
         {
             std::lock_guard callback_lock(callback_mutex_);
             if (outputs_.empty())
                 break;
             output = outputs_.front();
             outputs_.pop_front();
+            output_waiting = !outputs_.empty();
         }
         if (output.info.flags & AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG)
         {
@@ -141,7 +143,7 @@ AndroidVideoDecoder::OutputProgress AndroidVideoDecoder::drain_output(uint64_t g
 
         const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
             Clock::now().time_since_epoch()).count();
-        const auto when_ns = presentation_clock_.schedule(output.info.presentationTimeUs * 1000, now_ns);
+        const auto when_ns = presentation_clock_.schedule(output.info.presentationTimeUs * 1000, now_ns, output_waiting);
         const auto released = when_ns ? AMediaCodec_releaseOutputBufferAtTime(codec_, output.index, *when_ns)
                                       : AMediaCodec_releaseOutputBuffer(codec_, output.index, false);
         if (released != AMEDIA_OK)
@@ -149,7 +151,7 @@ AndroidVideoDecoder::OutputProgress AndroidVideoDecoder::drain_output(uint64_t g
             progress.error = true;
             break;
         }
-        codec_queue_.produced(output.info.presentationTimeUs);
+        codec_queue_.produced(output.info.presentationTimeUs, static_cast<uint64_t>(now_ns / 1000));
         ++progress.decoded;
         if (when_ns)
             ++progress.scheduled;

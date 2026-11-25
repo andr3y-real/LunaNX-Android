@@ -29,7 +29,7 @@ public final class PlaybackReportTest {
         require(summary, "aguardando imagem-chave: 3");
         require(summary, "aguardando chave +3");
         require(summary, "Lacunas RTP recuperadas / expiradas: 4 / 1");
-        require(summary, "idade no codec: 90 ms");
+        require(summary, "entrada até saída do codec: 90 ms");
         if (summary.contains("texto privado")) throw new AssertionError("Status text leaked");
         for (int i = 0; i < 16; ++i) {
             status[7] = String.valueOf(i + 2);

@@ -84,7 +84,7 @@ class LunaStreamSession
         uint64_t queue_ms = 0;
         uint64_t arrival_jitter_ms = 0;
         uint64_t codec_pending = 0;
-        uint64_t codec_age_ms = 0;
+        uint64_t peak_codec_delay_ms = 0;
         uint64_t non_picture_units = 0;
         uint64_t waiting_for_keyframe_drops = 0;
         uint64_t rtp_gaps_recovered = 0;
@@ -216,6 +216,10 @@ class LunaStreamSession
     uint32_t last_rtp_access_units_dropped_ = 0;
     int keyframe_request_attempts_ = 0;
     std::chrono::steady_clock::time_point last_keyframe_request_at_ {};
+    bool last_keyframe_request_sent_ = false;
+#ifdef __ANDROID__
+    uint64_t first_pending_pli_at_us_ = 0;
+#endif
     std::chrono::steady_clock::time_point last_decode_stall_request_at_ {};
     std::chrono::steady_clock::time_point streaming_since_ {};
 

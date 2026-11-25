@@ -24,6 +24,12 @@ int main()
     assert(clock.schedule(2 * frame, start + 2 * frame) == start + 3 * frame);
     assert(clock.schedule(4 * frame, start + 4 * frame) == start + 5 * frame);
 
+    VideoPresentationClock burst(60);
+    assert(burst.schedule(0, start, true) == start);
+    assert(burst.schedule(frame, start, true) == start + frame);
+    assert(burst.schedule(2 * frame, start, true) == start + 2 * frame);
+    assert(!burst.schedule(3 * frame, start, true));
+
     // Repeated timestamps restart the media anchor without a shared slot.
     assert(clock.schedule(4 * frame, start + 5 * frame) == start + 6 * frame);
 }

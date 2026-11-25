@@ -356,7 +356,8 @@ static void peer_connection_maybe_send_receiver_report(PeerConnection* pc) {
     size += 24;
   }
 
-  dtls_srtp_encrypt_rctp_packet(&pc->dtls_srtp, buf, &size);
+  if (dtls_srtp_encrypt_rctp_packet(&pc->dtls_srtp, buf, &size) != 0)
+    return;
   agent_send(&pc->agent, buf, size);
   pc->receiver_reports_sent++;
   if (pc->receiver_reports_sent <= 3 || pc->receiver_reports_sent % 120 == 0) {
@@ -1088,13 +1089,14 @@ int peer_connection_send_rtcp_pil(PeerConnection* pc, uint32_t ssrc) {
   if (rtcp_get_pli(plibuf, size, pc->vrtp_encoder.ssrc, ssrc) != size)
     return -1;
 
-  dtls_srtp_encrypt_rctp_packet(&pc->dtls_srtp, plibuf, &size);
+  if (dtls_srtp_encrypt_rctp_packet(&pc->dtls_srtp, plibuf, &size) != 0)
+    return -1;
   const int ret = agent_send(&pc->agent, plibuf, size);
   peer_connection_diag_log("rtcp_pli sent=%d mediaSsrc=%" PRIu32 " bytes=%d",
                            ret,
                            ssrc,
                            size);
-  return ret;
+  return ret == size ? ret : -1;
 }
 
 static int peer_connection_send_rtcp_nack(PeerConnection* pc, uint32_t ssrc,
@@ -1108,7 +1110,8 @@ static int peer_connection_send_rtcp_nack(PeerConnection* pc, uint32_t ssrc,
                     packet_id, bitmask) != size)
     return -1;
 
-  dtls_srtp_encrypt_rctp_packet(&pc->dtls_srtp, nackbuf, &size);
+  if (dtls_srtp_encrypt_rctp_packet(&pc->dtls_srtp, nackbuf, &size) != 0)
+    return -1;
   return agent_send(&pc->agent, nackbuf, size);
 }
 

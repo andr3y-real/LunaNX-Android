@@ -103,7 +103,25 @@ static void test_fragment_boundaries(void) {
   assert(pictures.sources[2] == 0x12345678 && decoder.access_units_dropped == 3);
 }
 
+static void test_gap_before_idr(void) {
+  struct Pictures pictures = {0};
+  uint8_t au[64];
+  RtpDecoder decoder = {0};
+  decoder.user_data = &pictures;
+  decoder.on_video_packet = record_picture;
+  decoder.au_buf = au;
+  decoder.au_capacity = sizeof(au);
+  const uint8_t delta[] = {0x41, 1};
+  const uint8_t idr[] = {0x65, 2};
+
+  receive(&decoder, 1, 1000, 1, delta, sizeof(delta));
+  receive(&decoder, 3, 3000, 1, idr, sizeof(idr));
+  assert(decoder.sequence_gaps == 1 && decoder.access_units_dropped == 1);
+  assert(pictures.count == 2 && pictures.timestamps[1] == 3000);
+}
+
 int main(void) {
   test_stats();
   test_fragment_boundaries();
+  test_gap_before_idr();
 }

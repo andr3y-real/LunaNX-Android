@@ -27,7 +27,7 @@ public:
     bool ready() const { return started_; }
     Signals signals();
     size_t codec_pending() const { return codec_queue_.count(); }
-    uint64_t codec_age_us(uint64_t now) const { return codec_queue_.age_us(now); }
+    uint64_t peak_codec_delay_us() const { return codec_queue_.peak_delay_us(); }
     bool submit_decode_unit(const uint8_t* data, int size, uint32_t timestamp, uint64_t generation);
     struct OutputProgress
     {

@@ -27,7 +27,7 @@ final class PlaybackReport {
     private long queueFull;
     private long maximumQueueMs;
     private long maximumJitterMs;
-    private long maximumCodecAgeMs;
+    private long maximumCodecDelayMs;
     private long measuredMs;
     private long measuredBytes;
     private long measuredReceived;
@@ -72,7 +72,7 @@ final class PlaybackReport {
         scheduled = Long.parseLong(status[3]);
         maximumQueueMs = Math.max(maximumQueueMs, Long.parseLong(status[8]));
         maximumJitterMs = Math.max(maximumJitterMs, Long.parseLong(status[9]));
-        maximumCodecAgeMs = Math.max(maximumCodecAgeMs, Long.parseLong(status[13]));
+        maximumCodecDelayMs = Math.max(maximumCodecDelayMs, Long.parseLong(status[13]));
         ++samples;
         if (phase != STREAMING) {
             previousSample = 0;
@@ -124,7 +124,7 @@ final class PlaybackReport {
         out.append("Recuperações por fila cheia: ").append(queueFull).append('\n');
         out.append("Picos amostrados — fila: ").append(maximumQueueMs)
             .append(" ms · variação RTP: ").append(maximumJitterMs)
-            .append(" ms · idade no codec: ").append(maximumCodecAgeMs).append(" ms\n");
+            .append(" ms · entrada até saída do codec: ").append(maximumCodecDelayMs).append(" ms\n");
         if (eventCount > 0) {
             out.append("\nÚltimos intervalos com ocorrências\n");
             for (int i = 0; i < eventCount; ++i) {

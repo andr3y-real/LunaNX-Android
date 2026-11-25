@@ -891,6 +891,12 @@ void LunaStreamSession::enqueue_decode_unit(const uint8_t* data, size_t size, ui
 #ifdef __ANDROID__
     if (idr)
     {
+        if (first_pending_pli_at_us_ != 0)
+        {
+            AppendStreamLog("KEYFRAME accepted_idr elapsed_since_first_pli_ms=" +
+                            std::to_string((NowUs() - first_pending_pli_at_us_) / 1000));
+            first_pending_pli_at_us_ = 0;
+        }
         decoder_resync_required_.store(false);
         keyframe_needed_.store(false);
     }
@@ -901,9 +907,11 @@ void LunaStreamSession::enqueue_decode_unit(const uint8_t* data, size_t size, ui
 void LunaStreamSession::request_keyframe(const char* reason)
 {
     const auto now = std::chrono::steady_clock::now();
-    const auto minimum_interval = decoder_resync_required_.load()
-        ? std::chrono::milliseconds(frames_decoded_.load() == 0 ? 600 : 900)
-        : std::chrono::milliseconds(1500);
+    auto minimum_interval = std::chrono::milliseconds(1500);
+    if (!last_keyframe_request_sent_)
+        minimum_interval = std::chrono::milliseconds(100);
+    else if (decoder_resync_required_.load())
+        minimum_interval = std::chrono::milliseconds(frames_decoded_.load() == 0 ? 600 : 900);
     if (last_keyframe_request_at_.time_since_epoch().count() != 0 &&
         now - last_keyframe_request_at_ < minimum_interval)
     {
@@ -914,6 +922,11 @@ void LunaStreamSession::request_keyframe(const char* reason)
     last_keyframe_request_at_ = now;
     ++keyframe_request_attempts_;
     const int result = pc_ ? peer_connection_request_video_keyframe(pc_) : -1;
+    last_keyframe_request_sent_ = result > 0;
+#ifdef __ANDROID__
+    if (last_keyframe_request_sent_ && decoder_resync_required_.load() && first_pending_pli_at_us_ == 0)
+        first_pending_pli_at_us_ = NowUs();
+#endif
     AppendStreamLog(std::string("KEYFRAME reason=") + reason + " pli=" + std::to_string(result));
     if (decoder_resync_required_.load())
         keyframe_needed_.store(true);
@@ -1141,7 +1154,7 @@ LunaStreamSession::AndroidVideoStats LunaStreamSession::android_video_stats()
             codec_resets_.load(), queue_recoveries_.load(), queue_ms,
             static_cast<uint64_t>(arrival_jitter_us_ / 1000),
             decoder_ ? decoder_->codec_pending() : 0,
-            decoder_ ? decoder_->codec_age_us(NowUs()) / 1000 : 0,
+            decoder_ ? decoder_->peak_codec_delay_us() / 1000 : 0,
             rtp.non_picture_access_units, waiting_for_keyframe_drops_,
             rtp.reorder_gap_recoveries, rtp.reorder_gap_expirations};
 }
