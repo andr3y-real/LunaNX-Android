@@ -52,7 +52,9 @@ import android.widget.AbsListView;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.ListView;
+import android.widget.ViewFlipper;
+import android.view.animation.TranslateAnimation;
+import android.view.animation.Animation;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -83,9 +85,10 @@ public final class MainActivity extends Activity {
     private static final int MUTED = 0xffbac0d4;
     // Row layout from game_rows in the JNI bridge.
     private static final int GAME_FIELDS = 8;
+    private static final String LIST_LAYOUT_PREF = "library_list";
     private static final int COVER = 1;
     private static final int OFFER = 2;
-    private static final int BACKDROP = 3;
+    private static final int BANNER_FALLBACK = 3;
     private static final int PREMIUM = 4;
     private static final int GAME_KEY = 5;
     private static final int DETAILS = 6;
@@ -454,7 +457,7 @@ public final class MainActivity extends Activity {
         selection = 0;
         loadingGames = false;
         libraryVisible = true;
-        listLayout = getPreferences(MODE_PRIVATE).getBoolean("library_list", false);
+        listLayout = getPreferences(MODE_PRIVATE).getBoolean(LIST_LAYOUT_PREF, false);
         LinearLayout page = libraryPage();
         homeScroll = null;
         libraryStatus = text("", 11, MUTED);
@@ -489,15 +492,25 @@ public final class MainActivity extends Activity {
     }
 
     private void addGenreList(LinearLayout page) {
-        sectionHeading(page, homeGenre, "", null);
         String[] filtered = gamesInGenre(homeGenre);
-        ListView list = new ListView(this);
-        list.setDividerHeight(dp(4));
-        list.setAdapter(new GameAdapter(filtered, true));
-        list.setOnItemClickListener((parent, view, position, id) ->
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setPadding(dp(16), dp(4), dp(16), dp(10));
+        LinearLayout labels = new LinearLayout(this);
+        labels.setOrientation(LinearLayout.VERTICAL);
+        labels.addView(heading(homeGenre));
+        labels.addView(text(gameCount(filtered), 14, MUTED));
+        header.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+        View back = libraryAction("‹  Início", false, this::openHome);
+        header.addView(back);
+        page.addView(header);
+        GridView categories = new GridView(this);
+        configurePosterGrid(categories, libraryColumnsForWidth());
+        categories.setAdapter(new GameAdapter(filtered, false));
+        categories.setOnItemClickListener((parent, view, position, id) ->
             launchFromHome(ALL_GAMES, filtered[position * GAME_FIELDS + GAME_KEY]));
         if (filtered.length == 0) libraryStatus.setText("Nenhum jogo nesta categoria");
-        page.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+        page.addView(categories, new LinearLayout.LayoutParams(-1, 0, 1));
     }
 
     private String gameCount(String[] rows) {
@@ -817,9 +830,8 @@ public final class MainActivity extends Activity {
         LinearLayout items = rail(body, Math.round(width * 888f / 628f));
         for (int offset = 0; offset < Math.min(rows.length, 8 * GAME_FIELDS); offset += GAME_FIELDS) {
             String key = rows[offset + GAME_KEY];
-            ImageView tile = coverView(rows[offset + COVER], 12);
-            tile.setForeground(tapBackground(Color.TRANSPARENT, 12));
-            tile.setContentDescription(rows[offset]);
+            PosterCard tile = new PosterCard();
+            tile.bind(rows, offset);
             tile.setFocusable(true);
             tile.setOnClickListener(v -> launchFromHome(RECENT_GAMES, key));
             LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(dp(width), -1);
@@ -847,9 +859,8 @@ public final class MainActivity extends Activity {
                 View tile = new View(this);
                 if (index < count) {
                     int offset = index * GAME_FIELDS;
-                    ImageView cover = coverView(rows[offset + COVER], 13);
-                    cover.setForeground(tapBackground(Color.TRANSPARENT, 13));
-                    cover.setContentDescription(rows[offset]);
+                    PosterCard cover = new PosterCard();
+                    cover.bind(rows, offset);
                     cover.setFocusable(true);
                     cover.setOnClickListener(v -> launchFromHome(ALL_GAMES, rows[offset + GAME_KEY]));
                     tile = cover;
@@ -864,36 +875,85 @@ public final class MainActivity extends Activity {
     private void addSpotlight(LinearLayout body, String[] top) {
         if (top.length == 0) return;
         sectionHeading(body, "Em destaque", "", () -> loadSection(TOP_GAMES));
-        LinearLayout card = new LinearLayout(this);
-        card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setPadding(dp(10), dp(10), dp(12), dp(10));
-        card.setBackground(chrome(LIBRARY_CARD, 18));
-        card.setForeground(tapBackground(Color.TRANSPARENT, 18));
-        card.setFocusable(true);
-        card.setContentDescription("Jogar " + top[0]);
-        card.setOnClickListener(v -> launchFromHome(TOP_GAMES, top[GAME_KEY]));
-        card.addView(coverView(top[COVER], 10), new LinearLayout.LayoutParams(dp(58), dp(80)));
+        ViewFlipper spotlight = new ViewFlipper(this) {
+            @Override protected void onWindowVisibilityChanged(int visibility) {
+                super.onWindowVisibilityChanged(visibility);
+                updateSpotlightPlayback();
+            }
 
-        LinearLayout labels = new LinearLayout(this);
-        labels.setOrientation(LinearLayout.VERTICAL);
-        labels.setPadding(dp(12), 0, dp(8), 0);
-        TextView title = text(top[0], 18, Color.WHITE);
-        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        title.setMaxLines(2);
-        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        labels.addView(title);
-        if (!top[DETAILS].isEmpty()) {
-            TextView details = text(top[DETAILS], 13, MUTED);
-            details.setMaxLines(2);
-            details.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            labels.addView(details);
+            @Override public void onWindowFocusChanged(boolean hasFocus) {
+                super.onWindowFocusChanged(hasFocus);
+                updateSpotlightPlayback();
+            }
+
+            private void updateSpotlightPlayback() {
+                android.view.accessibility.AccessibilityManager accessibility =
+                    getSystemService(android.view.accessibility.AccessibilityManager.class);
+                if (isAttachedToWindow() && hasWindowFocus() && getWindowVisibility() == View.VISIBLE && getChildCount() > 1 &&
+                    !hasFocus() && ValueAnimator.areAnimatorsEnabled() &&
+                    (accessibility == null || !accessibility.isTouchExplorationEnabled())) startFlipping();
+                else stopFlipping();
+            }
+
+            @Override public void requestChildFocus(View child, View focused) {
+                super.requestChildFocus(child, focused);
+                updateSpotlightPlayback();
+            }
+
+            @Override public void clearChildFocus(View child) {
+                super.clearChildFocus(child);
+                post(this::updateSpotlightPlayback);
+            }
+        };
+        spotlight.setFlipInterval(5500);
+        spotlight.setAnimateFirstView(false);
+        spotlight.setInAnimation(spotlightSlide(1, 0));
+        spotlight.setOutAnimation(spotlightSlide(0, -1));
+        spotlight.setBackground(chrome(LIBRARY_CARD, 18));
+        spotlight.setClipToOutline(true);
+
+        for (int i = 0; i < Math.min(5, top.length / GAME_FIELDS); ++i) {
+            int offset = i * GAME_FIELDS;
+            LinearLayout card = new LinearLayout(this);
+            card.setGravity(Gravity.CENTER_VERTICAL);
+            card.setPadding(dp(10), dp(10), dp(12), dp(10));
+            card.setForeground(tapBackground(Color.TRANSPARENT, 18));
+            card.setFocusable(true);
+            card.setContentDescription("Jogar " + top[offset]);
+            card.setOnClickListener(v -> launchFromHome(TOP_GAMES, top[offset + GAME_KEY]));
+            PosterImage poster = new PosterImage();
+            bindPoster(poster, top, offset);
+            card.addView(poster, new LinearLayout.LayoutParams(dp(58), dp(80)));
+            LinearLayout labels = new LinearLayout(this);
+            labels.setOrientation(LinearLayout.VERTICAL);
+            labels.setPadding(dp(12), 0, dp(8), 0);
+            TextView title = text(top[offset], 18, Color.WHITE);
+            title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            title.setMaxLines(2);
+            title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            labels.addView(title);
+            if (!top[offset + DETAILS].isEmpty()) {
+                TextView details = text(top[offset + DETAILS], 13, MUTED);
+                details.setMaxLines(2);
+                details.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                labels.addView(details);
+            }
+            card.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+            TextView play = text("▶", 17, LIBRARY_SELECTED);
+            play.setGravity(Gravity.CENTER);
+            play.setBackground(rounded(0xff3d2c54, 16));
+            card.addView(play, new LinearLayout.LayoutParams(dp(40), dp(40)));
+            spotlight.addView(card, new FrameLayout.LayoutParams(-1, -2));
         }
-        card.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView play = text("▶", 17, LIBRARY_SELECTED);
-        play.setGravity(Gravity.CENTER);
-        play.setBackground(rounded(0xff3d2c54, 16));
-        card.addView(play, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        body.addView(card);
+        body.addView(spotlight, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private Animation spotlightSlide(float from, float to) {
+        TranslateAnimation animation = new TranslateAnimation(Animation.RELATIVE_TO_SELF, from,
+            Animation.RELATIVE_TO_SELF, to, Animation.ABSOLUTE, 0, Animation.ABSOLUTE, 0);
+        animation.setDuration(320);
+        animation.setInterpolator(new DecelerateInterpolator());
+        return animation;
     }
 
     private void addCategories(LinearLayout body) {
@@ -937,11 +997,38 @@ public final class MainActivity extends Activity {
         for (int offset = GENRES; offset < games.length; offset += GAME_FIELDS)
             for (String genre : games[offset].split("\u001f"))
                 if (!genre.isEmpty()) genres.add(genreLabel(genre));
-        String[] options = genres.toArray(new String[0]);
-        new AlertDialog.Builder(this).setTitle("Categorias")
-            .setItems(options, (dialog, which) -> openCategory(options[which]))
-            .setNeutralButton("Luna Premium", (dialog, which) -> loadSection(PREMIUM_GAMES))
-            .setNegativeButton("Fechar", null).show();
+        Dialog dialog = new Dialog(this);
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackground(chrome(0xff20172d, 26));
+        scroll.setClipToOutline(true);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(18), dp(16), dp(18), dp(16));
+        scroll.addView(panel);
+        TextView title = heading("Categorias");
+        title.setPadding(0, 0, 0, dp(12));
+        panel.addView(title);
+        LinearLayout row = null;
+        int i = 0;
+        for (String genre : genres) {
+            if (i % 2 == 0) {
+                row = new LinearLayout(this);
+                LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(-1, -2);
+                size.bottomMargin = dp(8);
+                panel.addView(row, size);
+            }
+            LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(0, -2, 1);
+            if (i++ % 2 == 1) size.leftMargin = dp(8);
+            row.addView(libraryAction(genre, false, () -> {
+                dialog.dismiss();
+                openCategory(genre);
+            }), size);
+        }
+        panel.addView(libraryAction("Luna Premium", true, () -> {
+            dialog.dismiss();
+            loadSection(PREMIUM_GAMES);
+        }));
+        showLibraryDialog(dialog, scroll);
     }
 
     private void openCategory(String genre) {
@@ -991,30 +1078,37 @@ public final class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.setBackground(chrome(0xff20172d, 26));
         scroll.setClipToOutline(true);
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        scroll.addView(panel);
-        String artwork = rows[offset + BACKDROP].isEmpty() ? rows[offset + COVER] : rows[offset + BACKDROP];
-        int width = Math.min(480, getResources().getConfiguration().screenWidthDp - 32);
-        panel.addView(coverView(artwork, 0), new LinearLayout.LayoutParams(-1, dp(Math.max(116, width / 2))));
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
-        body.setPadding(dp(18), dp(14), dp(18), dp(16));
-        panel.addView(body);
-        TextView title = text(rows[offset], 24, Color.WHITE);
+        body.setPadding(dp(16), dp(16), dp(16), dp(16));
+        scroll.addView(body);
+        LinearLayout summary = new LinearLayout(this);
+        summary.setGravity(Gravity.CENTER_VERTICAL);
+        PosterImage artwork = new PosterImage();
+        bindPoster(artwork, rows, offset);
+        summary.addView(artwork, new LinearLayout.LayoutParams(dp(70), dp(100)));
+        LinearLayout labels = new LinearLayout(this);
+        labels.setOrientation(LinearLayout.VERTICAL);
+        labels.setPadding(dp(12), 0, 0, 0);
+        TextView title = text(rows[offset], 21, Color.WHITE);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        body.addView(title);
-        if (!rows[offset + DETAILS].isEmpty()) body.addView(text(rows[offset + DETAILS], 14, MUTED));
+        labels.addView(title);
+        if (!rows[offset + DETAILS].isEmpty()) labels.addView(text(rows[offset + DETAILS], 14, MUTED));
+        summary.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+        body.addView(summary);
         boolean premium = !rows[offset + PREMIUM].isEmpty() && !libraryInfo[3].isEmpty();
         if (premium) {
             TextView info = text("A Amazon pode exigir Luna Premium para iniciar.", 15, MUTED);
             info.setPadding(0, dp(12), 0, 0);
             body.addView(info);
         }
-        TextView framing = libraryAction("Enquadramento", false, this::showFramingSettings);
-        LinearLayout.LayoutParams framingSize = new LinearLayout.LayoutParams(-1, -2);
-        framingSize.topMargin = dp(14);
-        body.addView(framing, framingSize);
+        TextView framing = text("Enquadramento ›", 14, LIBRARY_SELECTED);
+        framing.setMinHeight(dp(48));
+        framing.setGravity(Gravity.CENTER_VERTICAL);
+        framing.setBackground(tapBackground(Color.TRANSPARENT, 12));
+        framing.setFocusable(true);
+        framing.setOnClickListener(v -> showFramingSettings());
+        body.addView(framing);
         LinearLayout actions = new LinearLayout(this);
         LinearLayout.LayoutParams actionSize = new LinearLayout.LayoutParams(-1, -2);
         actionSize.topMargin = dp(8);
@@ -1028,6 +1122,13 @@ public final class MainActivity extends Activity {
             start.run();
         }), startSize);
         showLibraryDialog(dialog, scroll);
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            WindowManager.LayoutParams params = window.getAttributes();
+            params.y = dp(12);
+            window.setAttributes(params);
+        }
     }
 
     private void resolveHomeLaunch(int source, String key) {
@@ -1063,22 +1164,17 @@ public final class MainActivity extends Activity {
         games = library;
         loadingGames = false;
         libraryVisible = true;
-        listLayout = getPreferences(MODE_PRIVATE).getBoolean("library_list", false);
+        listLayout = getPreferences(MODE_PRIVATE).getBoolean(LIST_LAYOUT_PREF, false);
         LinearLayout content = libraryPage();
         if (inlineSearch) addInlineSearch(content);
         libraryStatus = text("", 15, MUTED);
         libraryStatus.setPadding(dp(16), dp(4), dp(16), dp(8));
         content.addView(libraryStatus);
         grid = new GridView(this);
-        grid.setNumColumns(libraryColumns());
-        grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
+        configurePosterGrid(grid, libraryColumns());
         grid.setChoiceMode(GridView.CHOICE_MODE_SINGLE);
         grid.setSelector(rounded(0x55ae9aff, 12));
         grid.setDrawSelectorOnTop(true);
-        grid.setHorizontalSpacing(dp(12));
-        grid.setVerticalSpacing(dp(16));
-        grid.setPadding(dp(16), dp(4), dp(16), dp(16));
-        grid.setClipToPadding(false);
         grid.setOnItemClickListener((parent, view, position, id) -> {
             if (loadingGames) return;
             selectGame(visiblePositions[position]);
@@ -1088,6 +1184,15 @@ public final class MainActivity extends Activity {
         addBottomBar(content, false);
         renderGames();
         enterLibraryView(grid, 0, 10);
+    }
+
+    private void configurePosterGrid(GridView view, int columns) {
+        view.setNumColumns(columns);
+        view.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
+        view.setHorizontalSpacing(dp(10));
+        view.setVerticalSpacing(dp(14));
+        view.setPadding(dp(16), dp(4), dp(16), dp(16));
+        view.setClipToPadding(false);
     }
 
     private int libraryColumns() {
@@ -1194,8 +1299,8 @@ public final class MainActivity extends Activity {
         addSetting(body, "account", libraryInfo[0].isEmpty() ? "Conta Amazon" : libraryInfo[0],
             libraryInfo[2].isEmpty() ? "Perfil Luna e sessão" : libraryInfo[2], this::showAccount);
         addSetting(body, "grid", "Interface", "Alternar entre grade de capas e lista simples", () -> {
-            boolean list = getPreferences(MODE_PRIVATE).getBoolean("library_list", false);
-            getPreferences(MODE_PRIVATE).edit().putBoolean("library_list", !list).apply();
+            boolean list = getPreferences(MODE_PRIVATE).getBoolean(LIST_LAYOUT_PREF, false);
+            getPreferences(MODE_PRIVATE).edit().putBoolean(LIST_LAYOUT_PREF, !list).apply();
             inlineSearch = false;
             loadSection(ALL_GAMES);
         });
@@ -1461,7 +1566,7 @@ public final class MainActivity extends Activity {
                     loadSection(ALL_GAMES);
                     startCatalogDiscovery(true);
                 } else if (which == 2) {
-                    getPreferences(MODE_PRIVATE).edit().putBoolean("library_list", !listLayout).apply();
+                    getPreferences(MODE_PRIVATE).edit().putBoolean(LIST_LAYOUT_PREF, !listLayout).apply();
                     if (home || settingsScreen) loadSection(ALL_GAMES);
                     else showLibrary(games);
                 } else if (which == 3) showGameLanguage();
@@ -1538,6 +1643,67 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private final class PosterImage extends ImageView {
+        private boolean bannerFallback;
+
+        PosterImage() {
+            super(MainActivity.this);
+            setBackground(rounded(0xff2b223d, 12));
+            setClipToOutline(true);
+        }
+
+        void applyAspect(Bitmap bitmap) {
+            setScaleType(bannerFallback || (bitmap != null && bitmap.getWidth() >= bitmap.getHeight())
+                ? ScaleType.FIT_CENTER : ScaleType.CENTER_CROP);
+        }
+    }
+
+    private void bindPoster(PosterImage view, String[] rows, int offset) {
+        String url = rows[offset + COVER];
+        view.bannerFallback = url.isEmpty();
+        if (view.bannerFallback) url = rows[offset + BANNER_FALLBACK];
+        view.applyAspect(covers.get(url));
+        bindCover(view, url);
+    }
+
+    private final class PosterCard extends FrameLayout {
+        private final PosterImage image;
+        private final TextView title;
+
+        PosterCard() {
+            super(MainActivity.this);
+            setBackground(rounded(LIBRARY_CARD, 13));
+            setClipToOutline(true);
+            setForeground(tapBackground(Color.TRANSPARENT, 13));
+            image = new PosterImage();
+            addView(image, new FrameLayout.LayoutParams(-1, -1));
+            title = text("", 13, Color.WHITE);
+            title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            title.setMaxLines(2);
+            title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            title.setPadding(dp(7), dp(12), dp(7), dp(7));
+            title.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{0x00151220, 0xe8151220, 0xff151220}));
+            title.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            addView(title, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+        }
+
+        void bind(String[] rows, int offset) {
+            title.setText(rows[offset]);
+            setContentDescription(rows[offset] + (rows[offset + PREMIUM].isEmpty() ? "" : ", Luna Premium"));
+            bindPoster(image, rows, offset);
+        }
+
+        @Override protected void onMeasure(int widthSpec, int heightSpec) {
+            int width = View.MeasureSpec.getSize(widthSpec);
+            if (View.MeasureSpec.getMode(heightSpec) != View.MeasureSpec.EXACTLY) {
+                heightSpec = View.MeasureSpec.makeMeasureSpec(
+                    Math.round(width * 888f / 628f), View.MeasureSpec.EXACTLY);
+            }
+            super.onMeasure(widthSpec, heightSpec);
+        }
+    }
+
     private final class GameAdapter extends BaseAdapter {
         final String[] rows;
         final boolean list;
@@ -1553,34 +1719,12 @@ public final class MainActivity extends Activity {
 
         @Override public View getView(int position, View recycled, ViewGroup parent) {
             if (!list) {
-                FrameLayout card = (FrameLayout) recycled;
+                PosterCard card = (PosterCard) recycled;
                 if (card == null) {
-                    card = new FrameLayout(MainActivity.this) {
-                        @Override protected void onMeasure(int widthSpec, int heightSpec) {
-                            int width = View.MeasureSpec.getSize(widthSpec);
-                            super.onMeasure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-                                View.MeasureSpec.makeMeasureSpec(Math.round(width * 888f / 628f), View.MeasureSpec.EXACTLY));
-                        }
-                    };
+                    card = new PosterCard();
                     card.setLayoutParams(new AbsListView.LayoutParams(-1, -2));
-                    card.setBackground(rounded(LIBRARY_CARD, 14));
-                    card.setClipToOutline(true);
-                    ImageView cover = new ImageView(MainActivity.this);
-                    cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                    card.addView(cover, new FrameLayout.LayoutParams(-1, -1));
-                    TextView title = text("", 14, Color.WHITE);
-                    title.setPadding(dp(6), dp(6), dp(6), dp(6));
-                    title.setBackgroundColor(0xe8222031);
-                    title.setMaxLines(3);
-                    card.addView(title, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
                 }
-                int offset = position * GAME_FIELDS;
-                card.setContentDescription(rows[offset] +
-                    (rows[offset + PREMIUM].isEmpty() ? "" : ", Luna Premium"));
-                TextView title = (TextView) card.getChildAt(1);
-                title.setText(rows[offset]);
-                title.setVisibility(rows[offset + COVER].isEmpty() ? View.VISIBLE : View.GONE);
-                bindCover((ImageView) card.getChildAt(0), rows[offset + COVER]);
+                card.bind(rows, position * GAME_FIELDS);
                 return card;
             }
             LinearLayout tile = (LinearLayout) recycled;
@@ -1590,8 +1734,7 @@ public final class MainActivity extends Activity {
                 tile.setGravity(Gravity.CENTER_VERTICAL);
                 tile.setPadding(dp(8), dp(4), dp(8), dp(4));
                 tile.setBackground(rounded(LIBRARY_CARD, 12));
-                ImageView cover = new ImageView(MainActivity.this);
-                cover.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                PosterImage cover = new PosterImage();
                 tile.addView(cover, new LinearLayout.LayoutParams(dp(48), dp(62)));
                 LinearLayout labels = new LinearLayout(MainActivity.this);
                 labels.setOrientation(LinearLayout.VERTICAL);
@@ -1612,12 +1755,13 @@ public final class MainActivity extends Activity {
             boolean premium = !rows[offset + PREMIUM].isEmpty();
             badge.setText(premium && rows[offset + OFFER].isEmpty() ? "Luna Premium" : rows[offset + OFFER]);
             badge.setTextColor(premium ? 0xffffc44d : MUTED);
-            bindCover((ImageView) tile.getChildAt(0), rows[offset + COVER]);
+            bindPoster((PosterImage) tile.getChildAt(0), rows, offset);
             return tile;
         }
     }
 
     private void revealArtwork(ImageView view, Bitmap artwork) {
+        if (view instanceof PosterImage) ((PosterImage) view).applyAspect(artwork);
         view.setImageBitmap(artwork);
         if (!view.isAttachedToWindow() || !ValueAnimator.areAnimatorsEnabled()) return;
         view.setAlpha(0.3f);
@@ -2353,8 +2497,8 @@ public final class MainActivity extends Activity {
             switch (event.getKeyCode()) {
                 case KeyEvent.KEYCODE_BUTTON_A:
                     View focus = getCurrentFocus();
-                    if (focus instanceof ListView) {
-                        ListView list = (ListView) focus;
+                    if (focus instanceof android.widget.AdapterView<?>) {
+                        android.widget.AdapterView<?> list = (android.widget.AdapterView<?>) focus;
                         int position = list.getSelectedItemPosition();
                         if (position == android.widget.AdapterView.INVALID_POSITION) return false;
                         action = () -> list.performItemClick(list.getSelectedView(), position,

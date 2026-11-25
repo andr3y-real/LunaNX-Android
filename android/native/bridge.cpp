@@ -172,8 +172,7 @@ jobjectArray game_rows(JNIEnv* env)
     for (const auto& game : results)
     {
         rows.push_back(game.title);
-        rows.push_back(ResizeAmazonImageUrl(
-            game.image_portrait.empty() ? game.image_landscape : game.image_portrait, 384));
+        rows.push_back(ResizeAmazonImageUrl(game.image_portrait, 384));
         rows.push_back(game.offer_tag);
         rows.push_back(ResizeAmazonImageUrl(
             game.image_landscape.empty() ? game.image_portrait : game.image_landscape, 720));
