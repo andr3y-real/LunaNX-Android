@@ -2,6 +2,9 @@ package org.lunanx.android;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
@@ -37,6 +40,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.GridView;
+import android.widget.Gallery;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -67,22 +71,61 @@ public final class MainActivity extends Activity {
     private static final int CARD = 0xff1c2030;
     private static final int ACCENT = 0xffae9aff;
     private static final int MUTED = 0xffbac0d4;
+    // Row layout from game_rows in the JNI bridge.
+    private static final int GAME_FIELDS = 7;
+    private static final int COVER = 1;
+    private static final int OFFER = 2;
+    private static final int BACKDROP = 3;
+    private static final int PREMIUM = 4;
+    private static final int GAME_KEY = 5;
+    private static final int DETAILS = 6;
+    private static final int ALL_GAMES = 0;
+    private static final int TOP_GAMES = 1;
+    private static final int RECENT_GAMES = 2;
+    private static final int PREMIUM_GAMES = 3;
+    private static final String[] SECTIONS = {"Todos", "Top 10", "Continuar", "Premium"};
     private static final int STREAMING = 3;
     private static final int ENDED = 4;
 
     private static final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
+    private static final ExecutorService catalogWorker = Executors.newSingleThreadExecutor();
     private static final ExecutorService artwork = Executors.newFixedThreadPool(2);
     private static final LruCache<String, Bitmap> covers = new LruCache<String, Bitmap>(12 * 1024 * 1024) {
         @Override protected int sizeOf(String key, Bitmap value) { return value.getByteCount(); }
     };
 
     private final Handler ui = new Handler(Looper.getMainLooper());
+    private ConnectivityManager connectivity;
+    private boolean monitoringConnection;
+    private final ConnectivityManager.NetworkCallback connectionListener =
+        new ConnectivityManager.NetworkCallback() {
+            @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
+                if (libraryVisible) updateLibraryConnection();
+            }
+            @Override public void onLost(Network network) {
+                if (libraryVisible) updateLibraryConnection();
+            }
+        };
     private volatile long operation;
     private volatile boolean destroyed;
     private boolean authenticating;
     private boolean loadingGames;
     private FrameLayout player;
     private GridView grid;
+    private Gallery carousel;
+    private ImageView libraryBackdrop;
+    private TextView selectedTitle;
+    private TextView selectedDetails;
+    private TextView connectionStatus;
+    private int libraryDirection;
+    private Button playSelection;
+    private int selection;
+    private boolean listLayout;
+    private boolean libraryVisible;
+    private String[] libraryInfo = {"", "", "", "", "", "0"};
+    private volatile long catalogGeneration;
+    private volatile boolean catalogPaused;
+    private boolean catalogRefreshPending;
     private TextView libraryStatus;
     private TextView streamStatus;
     private TextView metrics;
@@ -135,7 +178,8 @@ public final class MainActivity extends Activity {
     private native void nativeSignOut();
     private native String[] nativeSearch(String query);
     private native String[] nativeSection(int section);
-    private native String[] nativeExplore(long token);
+    private native String[] nativeLibraryInfo();
+    private native boolean nativeExplore(long generation, boolean force);
     private native void nativeStart(int index, Surface surface, boolean preferBrazilianPortuguese);
     private native int nativeTick(int buttons, float lt, float rt, float lx, float ly, float rx, float ry);
     private native String[] nativeStatus();
@@ -145,6 +189,7 @@ public final class MainActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         inputManager = getSystemService(InputManager.class);
+        connectivity = getSystemService(ConnectivityManager.class);
         if (inputManager != null) inputManager.registerInputDeviceListener(inputListener, ui);
         showLoading("Carregando a sessão Amazon…");
         long token = ++operation;
@@ -154,10 +199,8 @@ public final class MainActivity extends Activity {
                 nativeInit(getFilesDir().getAbsolutePath());
                 markets = nativeMarkets();
                 String[] library = nativeLoad();
-                post(token, () -> {
-                    if (library == null) showSignIn(null);
-                    else showLibrary(library);
-                });
+                if (library == null) post(token, () -> showSignIn(null));
+                else openLibrary(token);
             } catch (Exception error) {
                 post(token, () -> showSignIn(message(error)));
             }
@@ -230,12 +273,17 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout screen(boolean center) {
+        LinearLayout content = screenContent();
+        if (center) content.setGravity(Gravity.CENTER);
+        setContentView(content);
+        return content;
+    }
+
+    private LinearLayout screenContent() {
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         content.setPadding(dp(18), dp(16), dp(18), dp(16));
         content.setBackgroundColor(BACKGROUND);
-        if (center) content.setGravity(Gravity.CENTER);
-        setContentView(content);
         return content;
     }
 
@@ -294,10 +342,7 @@ public final class MainActivity extends Activity {
         worker.execute(() -> {
             try {
                 String[] library = nativeSignIn(market, token);
-                if (library != null) post(token, () -> {
-                    authenticating = false;
-                    showLibrary(library);
-                });
+                if (library != null) openLibrary(token);
             } catch (Exception error) {
                 post(token, () -> showSignIn(message(error)));
             }
@@ -343,14 +388,63 @@ public final class MainActivity extends Activity {
         });
     }
 
+    // Reads the initial section on the same worker that owns the native launch indices.
+    private void openLibrary(long token) {
+        String[] info = nativeLibraryInfo();
+        int initialSection = RECENT_GAMES;
+        String[] initial = nativeSection(initialSection);
+        if (initial.length == 0) initial = nativeSection(initialSection = TOP_GAMES);
+        if (initial.length == 0) initial = nativeSection(initialSection = ALL_GAMES);
+        final int openedSection = initialSection;
+        final String[] rows = initial;
+        post(token, () -> {
+            authenticating = false;
+            libraryInfo = info;
+            section = openedSection;
+            search = "";
+            selection = 0;
+            showLibrary(rows);
+            startCatalogDiscovery(false);
+        });
+    }
+
     private void showLibrary(String[] library) {
         games = library;
         loadingGames = false;
-        LinearLayout content = screen(false);
+        libraryVisible = true;
+        listLayout = getPreferences(MODE_PRIVATE).getBoolean("library_list", false);
+        LinearLayout content = screenContent();
+        FrameLayout background = new FrameLayout(this);
+        setContentView(background, new ViewGroup.LayoutParams(-1, -1));
+        libraryBackdrop = new ImageView(this);
+        libraryBackdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        background.addView(libraryBackdrop, new FrameLayout.LayoutParams(-1, -1));
+        content.setBackgroundColor(0xe010121c);
+        background.addView(content, new FrameLayout.LayoutParams(-1, -1));
+
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(heading("LunaNX"), new LinearLayout.LayoutParams(0, -2, 1));
-        header.addView(button("Conta", this::showAccount));
+        LinearLayout identity = new LinearLayout(this);
+        identity.setOrientation(LinearLayout.VERTICAL);
+        identity.addView(heading("LunaNX"));
+        connectionStatus = text("", 12, MUTED);
+        identity.addView(connectionStatus);
+        updateLibraryConnection();
+        header.addView(identity, new LinearLayout.LayoutParams(0, -2, 1));
+        if (!libraryInfo[1].isEmpty()) {
+            ImageView avatar = new ImageView(this);
+            avatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            avatar.setBackground(rounded(CARD, 20));
+            avatar.setClipToOutline(true);
+            avatar.setContentDescription("Avatar do perfil Luna");
+            avatar.setOnClickListener(v -> showAccount());
+            header.addView(avatar, new LinearLayout.LayoutParams(dp(38), dp(38)));
+            bindCover(avatar, libraryInfo[1]);
+        }
+        Button account = button("Conta", this::showAccount);
+        if (!libraryInfo[0].isEmpty()) account.setContentDescription("Conta de " + libraryInfo[0]);
+        header.addView(account);
+        header.addView(button("Menu", this::showLibraryMenu));
         content.addView(header);
 
         LinearLayout searchRow = new LinearLayout(this);
@@ -364,7 +458,9 @@ public final class MainActivity extends Activity {
             ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
                 .hideSoftInputFromWindow(query.getWindowToken(), 0);
             query.clearFocus();
-            loadGames(query.getText().toString().trim());
+            String submitted = query.getText().toString().trim();
+            if (submitted.isEmpty()) loadSection(ALL_GAMES);
+            else loadGames(submitted);
         };
         query.setOnEditorActionListener((view, action, event) -> {
             if (action != EditorInfo.IME_ACTION_SEARCH) return false;
@@ -376,54 +472,162 @@ public final class MainActivity extends Activity {
         content.addView(searchRow);
 
         LinearLayout sections = new LinearLayout(this);
-        sections.addView(button("Todos", () -> loadSection(0)), new LinearLayout.LayoutParams(0, -2, 1));
-        sections.addView(button("Top 10", () -> loadSection(1)), new LinearLayout.LayoutParams(0, -2, 1));
-        sections.addView(button("Continuar", () -> loadSection(2)), new LinearLayout.LayoutParams(0, -2, 1));
+        for (int i = 0; i < SECTIONS.length; ++i) {
+            final int destination = i;
+            Button tab = button(SECTIONS[i], () -> loadSection(destination));
+            tab.setTextSize(12);
+            tab.setPadding(0, 0, 0, 0);
+            if (search.isEmpty() && i == section) tab.setTextColor(ACCENT);
+            sections.addView(tab, new LinearLayout.LayoutParams(0, -2, 1));
+        }
         content.addView(sections);
 
         libraryStatus = text("", 14, MUTED);
-        libraryStatus.setPadding(0, dp(8), 0, dp(8));
         content.addView(libraryStatus);
-        grid = new GridView(this);
-        grid.setNumColumns(GridView.AUTO_FIT);
-        grid.setColumnWidth(dp(138));
-        grid.setHorizontalSpacing(dp(10));
-        grid.setVerticalSpacing(dp(10));
-        grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
-        grid.setOnItemClickListener((parent, view, position, id) -> {
-            if (!loadingGames) showPlayer(position);
-        });
-        content.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1));
+        if (listLayout) {
+            carousel = null;
+            grid = new GridView(this);
+            grid.setNumColumns(1);
+            grid.setChoiceMode(GridView.CHOICE_MODE_SINGLE);
+            grid.setSelector(rounded(0x66ae9aff, 8));
+            grid.setDrawSelectorOnTop(true);
+            grid.setVerticalSpacing(dp(4));
+            grid.setOnItemClickListener((parent, view, position, id) -> selectGame(position));
+            content.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1));
+        } else {
+            grid = null;
+            carousel = new Gallery(this);
+            carousel.setSpacing(dp(12));
+            carousel.setAnimationDuration(180);
+            carousel.setGravity(Gravity.CENTER);
+            carousel.setUnselectedAlpha(0.62f);
+            carousel.setCallbackDuringFling(false);
+            carousel.setOnItemClickListener((parent, view, position, id) -> selectGame(position));
+            carousel.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+                @Override public void onItemSelected(android.widget.AdapterView<?> parent, View view,
+                                                     int position, long id) {
+                    if (parent == carousel) selectGame(position);
+                }
+                @Override public void onNothingSelected(android.widget.AdapterView<?> parent) {}
+            });
+            content.addView(carousel, new LinearLayout.LayoutParams(-1, 0, 1));
+        }
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout summary = new LinearLayout(this);
+        summary.setOrientation(LinearLayout.VERTICAL);
+        selectedTitle = text("", 16, Color.WHITE);
+        selectedTitle.setMaxLines(2);
+        summary.addView(selectedTitle);
+        selectedDetails = text("", 12, MUTED);
+        selectedDetails.setMaxLines(2);
+        summary.addView(selectedDetails);
+        actions.addView(summary, new LinearLayout.LayoutParams(0, -2, 1));
+        playSelection = button("Jogar", this::launchSelection);
+        actions.addView(playSelection);
+        content.addView(actions);
         renderGames();
     }
 
+    private void updateLibraryConnection() {
+        String plan = libraryInfo[2];
+        String network = libraryNetwork();
+        connectionStatus.setText(plan.isEmpty() ? network :
+            network.isEmpty() ? plan : plan + " · " + network);
+    }
+
+    private String libraryNetwork() {
+        if (connectivity == null) return "";
+        Network active = connectivity.getActiveNetwork();
+        NetworkCapabilities network = active == null ? null : connectivity.getNetworkCapabilities(active);
+        if (network == null) return "Sem conexão";
+        if (network.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return "Ethernet";
+        if (network.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "Wi-Fi";
+        if (network.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return "Dados móveis";
+        return "";
+    }
+
     private void renderGames() {
-        int count = games.length / 3;
-        String label = !search.isEmpty() ? "Resultados" :
-            section == 1 ? "Top 10" : section == 2 ? "Continue jogando" : "Biblioteca";
-        libraryStatus.setText(label + " · " + (count == 0 ? "Nenhum jogo encontrado" :
-            count + (count == 1 ? " jogo" : " jogos")));
-        grid.setAdapter(new GameAdapter(games));
+        int count = games.length / GAME_FIELDS;
+        String label = search.isEmpty() ? SECTIONS[section] : "Resultados";
+        String status = label + " · " + (count == 0 ? "Nenhum jogo encontrado" :
+            count + (count == 1 ? " jogo" : " jogos"));
+        if (search.isEmpty() && section == PREMIUM_GAMES && !libraryInfo[3].isEmpty())
+            status += " · Requer Luna Premium";
+        libraryStatus.setText(status);
+        int position = Math.min(selection, count - 1);
+        if (grid != null) {
+            grid.setAdapter(new GameAdapter(games, true));
+            if (position >= 0) grid.setSelection(position);
+        } else {
+            carousel.setAdapter(new GameAdapter(games, false));
+            if (position >= 0) carousel.setSelection(position);
+        }
+        if (position >= 0) selectGame(position);
+        else {
+            selection = 0;
+            selectedTitle.setText("");
+            selectedDetails.setVisibility(View.GONE);
+            playSelection.setEnabled(false);
+            bindCover(libraryBackdrop, "");
+        }
+    }
+
+    private void selectGame(int position) {
+        int offset = position * GAME_FIELDS;
+        if (!libraryVisible || position < 0 || offset >= games.length) return;
+        selection = position;
+        selectedTitle.setText(games[offset]);
+        String details = games[offset + DETAILS];
+        selectedDetails.setText(details);
+        selectedDetails.setVisibility(details.isEmpty() ? View.GONE : View.VISIBLE);
+        playSelection.setEnabled(!loadingGames);
+        bindCover(libraryBackdrop, listLayout ? "" : games[offset + BACKDROP]);
+        if (grid != null) grid.setItemChecked(position, true);
+    }
+
+    private void launchSelection() {
+        if (!libraryVisible || loadingGames || games.length == 0) return;
+        int selected = selection;
+        if (!games[selected * GAME_FIELDS + PREMIUM].isEmpty() && !libraryInfo[3].isEmpty()) {
+            long token = operation;
+            String key = games[selected * GAME_FIELDS + GAME_KEY];
+            new AlertDialog.Builder(this)
+                .setTitle("Este jogo requer Luna Premium")
+                .setMessage("A Amazon pode pedir uma assinatura Luna Premium para abrir " +
+                    games[selected * GAME_FIELDS] + ".")
+                .setPositiveButton("Tentar jogar", (dialog, which) -> {
+                    if (isCancelled(token) || !libraryVisible || loadingGames) return;
+                    for (int i = 0; i < games.length; i += GAME_FIELDS) {
+                        if (games[i + GAME_KEY].equals(key)) {
+                            showPlayer(i / GAME_FIELDS);
+                            break;
+                        }
+                    }
+                })
+                .setNegativeButton("Voltar", null).show();
+        } else showPlayer(selected);
     }
 
     private void loadGames(String query) {
         if (loadingGames) return;
         loadingGames = true;
+        playSelection.setEnabled(false);
         libraryStatus.setText("Carregando jogos…");
         long token = ++operation;
         worker.execute(() -> {
             try {
                 String[] result = nativeSearch(query);
                 post(token, () -> {
-                    games = result;
                     search = query;
-                    section = 0;
-                    loadingGames = false;
-                    renderGames();
+                    section = ALL_GAMES;
+                    selection = 0;
+                    showLibrary(result);
                 });
             } catch (Exception error) {
                 post(token, () -> {
                     loadingGames = false;
+                    playSelection.setEnabled(games.length != 0);
                     libraryStatus.setText(message(error));
                 });
             }
@@ -433,6 +637,7 @@ public final class MainActivity extends Activity {
     private void loadSection(int selected) {
         if (loadingGames) return;
         loadingGames = true;
+        playSelection.setEnabled(false);
         libraryStatus.setText("Carregando jogos…");
         long token = ++operation;
         worker.execute(() -> {
@@ -441,47 +646,116 @@ public final class MainActivity extends Activity {
                 post(token, () -> {
                     section = selected;
                     search = "";
+                    selection = 0;
                     showLibrary(result);
                 });
             } catch (Exception error) {
                 post(token, () -> {
                     loadingGames = false;
+                    playSelection.setEnabled(games.length != 0);
                     libraryStatus.setText(message(error));
                 });
             }
         });
     }
 
-    private void exploreCatalog() {
-        showLoading("Procurando mais jogos no catálogo…");
-        long token = ++operation;
-        worker.execute(() -> {
+    private boolean canExploreCatalog(long generation) {
+        return !destroyed && !catalogPaused && catalogGeneration == generation;
+    }
+
+    private void startCatalogDiscovery(boolean force) {
+        catalogPaused = false;
+        long generation = ++catalogGeneration;
+        catalogWorker.execute(() -> {
+            if (!canExploreCatalog(generation)) return;
             try {
-                String[] result = nativeExplore(token);
-                post(token, () -> {
-                    section = 0;
-                    search = "";
-                    showLibrary(result);
-                });
-            } catch (Exception error) {
-                post(token, () -> {
-                    showLibrary(games);
-                    libraryStatus.setText(message(error));
-                });
+                nativeExplore(generation, force);
+            } catch (Exception ignored) {
+                // The available catalog remains usable. The account menu can retry discovery.
+            } finally {
+                ui.post(() -> refreshDiscoveredGames(generation));
             }
         });
+    }
+
+    // Called by the explorer when it adds a batch. Coalesce refreshes on the UI thread.
+    private void catalogBatchAdded(long generation) {
+        ui.post(() -> {
+            if (!canExploreCatalog(generation) || catalogRefreshPending) return;
+            catalogRefreshPending = true;
+            ui.postDelayed(() -> {
+                catalogRefreshPending = false;
+                refreshDiscoveredGames(generation);
+            }, 2500);
+        });
+    }
+
+    private void refreshDiscoveredGames(long generation) {
+        if (!canExploreCatalog(generation) || !libraryVisible || loadingGames ||
+            !search.isEmpty() || (section != ALL_GAMES && section != PREMIUM_GAMES)) return;
+        loadingGames = true;
+        long token = operation;
+        int visibleSection = section;
+        worker.execute(() -> {
+            try {
+                String[] rows = nativeSection(visibleSection);
+                post(token, () -> {
+                    loadingGames = false;
+                    if (java.util.Arrays.equals(games, rows)) return;
+                    String selectedKey = games.length == 0 ? "" : games[selection * GAME_FIELDS + GAME_KEY];
+                    for (int i = 0; i < rows.length; i += GAME_FIELDS) {
+                        if (rows[i + GAME_KEY].equals(selectedKey)) {
+                            selection = i / GAME_FIELDS;
+                            break;
+                        }
+                    }
+                    games = rows;
+                    renderGames();
+                });
+            } catch (Exception error) {
+                post(token, () -> loadingGames = false);
+            }
+        });
+    }
+
+    private void showLibraryMenu() {
+        if (loadingGames) return;
+        new AlertDialog.Builder(this)
+            .setTitle("Menu da biblioteca")
+            .setItems(new String[]{"Recarregar biblioteca", "Carregar mais jogos",
+                listLayout ? "Mostrar carrossel" : "Mostrar lista simples", "Idioma dos jogos",
+                "Sair do LunaNX"}, (dialog, which) -> {
+                if (which == 0) refreshLibrary();
+                else if (which == 1) {
+                    loadSection(ALL_GAMES);
+                    startCatalogDiscovery(true);
+                } else if (which == 2) {
+                    getPreferences(MODE_PRIVATE).edit().putBoolean("library_list", !listLayout).apply();
+                    showLibrary(games);
+                } else if (which == 3) showGameLanguage();
+                else finish();
+            }).show();
     }
 
     private void showAccount() {
         if (loadingGames) return;
-        new AlertDialog.Builder(this)
-            .setTitle("Conta Amazon")
-            .setItems(new String[]{"Recarregar biblioteca", "Carregar mais jogos", "Idioma dos jogos", "Sair da conta"}, (dialog, which) -> {
-                if (which == 0) refreshLibrary();
-                else if (which == 1) exploreCatalog();
-                else if (which == 2) showGameLanguage();
-                else signOut();
-            }).show();
+        long token = operation;
+        worker.execute(() -> {
+            String[] info = nativeLibraryInfo();
+            post(token, () -> {
+                if (!libraryVisible) return;
+                String title = info[0].isEmpty() ? "Conta Amazon" : info[0];
+                String plan = info[2].isEmpty() ? "Plano Luna não identificado" : info[2];
+                new AlertDialog.Builder(this)
+                    .setTitle(title)
+                    .setMessage(plan + "\nLoja da conta: " + info[4] +
+                        "\nJogos disponíveis: " + info[5])
+                    .setPositiveButton("Fechar", null)
+                    .setNeutralButton("Menu", (dialog, which) -> showLibraryMenu())
+                    .setNegativeButton("Sair da conta", (dialog, which) -> signOut())
+                    .show();
+            });
+        });
     }
 
     private void showGameLanguage() {
@@ -497,17 +771,15 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshLibrary() {
+        libraryVisible = false;
+        ++catalogGeneration;
         showLoading("Atualizando a biblioteca…");
         long token = ++operation;
         worker.execute(() -> {
             try {
                 String[] result = nativeLoad();
-                post(token, () -> {
-                    section = 0;
-                    search = "";
-                    if (result == null) showSignIn("A sessão expirou. Gere um novo código.");
-                    else showLibrary(result);
-                });
+                if (result == null) post(token, () -> showSignIn("A sessão expirou. Gere um novo código."));
+                else openLibrary(token);
             } catch (Exception error) {
                 post(token, () -> {
                     showLibrary(games);
@@ -518,6 +790,8 @@ public final class MainActivity extends Activity {
     }
 
     private void signOut() {
+        libraryVisible = false;
+        ++catalogGeneration;
         showLoading("Encerrando a sessão Amazon…");
         long token = ++operation;
         worker.execute(() -> {
@@ -532,47 +806,70 @@ public final class MainActivity extends Activity {
 
     private final class GameAdapter extends BaseAdapter {
         final String[] rows;
-        GameAdapter(String[] rows) { this.rows = rows; }
-        @Override public int getCount() { return rows.length / 3; }
-        @Override public Object getItem(int position) { return rows[position * 3]; }
+        final boolean list;
+
+        GameAdapter(String[] rows, boolean list) {
+            this.rows = rows;
+            this.list = list;
+        }
+
+        @Override public int getCount() { return rows.length / GAME_FIELDS; }
+        @Override public Object getItem(int position) { return rows[position * GAME_FIELDS]; }
         @Override public long getItemId(int position) { return position; }
+
         @Override public View getView(int position, View recycled, ViewGroup parent) {
-            LinearLayout tile;
-            if (recycled == null) {
+            LinearLayout tile = (LinearLayout) recycled;
+            if (tile == null) {
                 tile = new LinearLayout(MainActivity.this);
-                tile.setOrientation(LinearLayout.VERTICAL);
+                tile.setOrientation(list ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+                tile.setGravity(Gravity.CENTER_VERTICAL);
+                tile.setPadding(dp(8), dp(4), dp(8), dp(4));
                 tile.setBackground(rounded(CARD, 12));
-                tile.setClipToOutline(true);
+                if (!list) tile.setLayoutParams(new Gallery.LayoutParams(dp(146), -1));
                 ImageView cover = new ImageView(MainActivity.this);
                 cover.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                tile.addView(cover, new LinearLayout.LayoutParams(-1, dp(132)));
-                TextView name = text("", 15, Color.WHITE);
+                tile.addView(cover, list ? new LinearLayout.LayoutParams(dp(42), dp(54)) :
+                    new LinearLayout.LayoutParams(-1, 0, 1));
+                LinearLayout labels = new LinearLayout(MainActivity.this);
+                labels.setOrientation(LinearLayout.VERTICAL);
+                labels.setPadding(list ? dp(10) : 0, dp(4), 0, dp(4));
+                tile.addView(labels, new LinearLayout.LayoutParams(-1, -2));
+                TextView name = text("", 14, Color.WHITE);
                 name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
                 name.setMaxLines(2);
-                name.setPadding(dp(10), dp(8), dp(10), 0);
-                tile.addView(name, new LinearLayout.LayoutParams(-1, dp(48)));
+                labels.addView(name);
                 TextView badge = text("", 11, MUTED);
-                badge.setSingleLine();
-                badge.setPadding(dp(10), 0, dp(10), dp(3));
-                tile.addView(badge, new LinearLayout.LayoutParams(-1, dp(24)));
-            } else {
-                tile = (LinearLayout) recycled;
+                badge.setSingleLine(true);
+                labels.addView(badge);
             }
-            int offset = position * 3;
-            ((TextView) tile.getChildAt(1)).setText(rows[offset]);
-            ((TextView) tile.getChildAt(2)).setText(rows[offset + 2]);
-            bindCover((ImageView) tile.getChildAt(0), rows[offset + 1]);
+            int offset = position * GAME_FIELDS;
+            LinearLayout labels = (LinearLayout) tile.getChildAt(1);
+            ((TextView) labels.getChildAt(0)).setText(rows[offset]);
+            TextView badge = (TextView) labels.getChildAt(1);
+            boolean premium = !rows[offset + PREMIUM].isEmpty();
+            badge.setText(premium && rows[offset + OFFER].isEmpty() ? "Luna Premium" : rows[offset + OFFER]);
+            badge.setTextColor(premium ? 0xffffc44d : MUTED);
+            bindCover((ImageView) tile.getChildAt(0), rows[offset + COVER]);
             return tile;
         }
     }
 
     private void bindCover(ImageView image, String url) {
+        if (url.equals(image.getTag())) return;
         image.setTag(url);
         Bitmap cached = covers.get(url);
-        image.setImageBitmap(cached);
+        if (cached != null || image == libraryBackdrop) image.setImageBitmap(cached);
+        else image.setImageResource(R.drawable.lunanx_icon);
         if (url.isEmpty() || cached != null) return;
         artwork.execute(() -> {
-            if (destroyed || covers.get(url) != null) return;
+            if (destroyed) return;
+            Bitmap ready = covers.get(url);
+            if (ready != null) {
+                ui.post(() -> {
+                    if (!destroyed && url.equals(image.getTag())) image.setImageBitmap(ready);
+                });
+                return;
+            }
             HttpsURLConnection connection = null;
             try {
                 URL uri = new URL(url);
@@ -608,8 +905,11 @@ public final class MainActivity extends Activity {
     private static final int TOUCH_RT = 0x20000;
 
     private void showPlayer(int index) {
+        libraryVisible = false;
+        catalogPaused = true;
+        ++catalogGeneration;
         selectedGame = index;
-        playerTitle = games[index * 3];
+        playerTitle = games[index * GAME_FIELDS];
         showMetrics = false;
         videoSurfaceError = null;
         playerFraming = PlayerFraming.fromPreference(
@@ -987,7 +1287,8 @@ public final class MainActivity extends Activity {
         getWindow().getDecorView().setSystemUiVisibility(0);
         setRequestedOrientation(returnOrientation);
         showLibrary(games);
-        if (section == 2) loadSection(2);
+        if (section == RECENT_GAMES) loadSection(RECENT_GAMES);
+        startCatalogDiscovery(false);
     }
 
     private void stopPlaybackAsync() {
@@ -1131,6 +1432,8 @@ public final class MainActivity extends Activity {
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (libraryVisible && isGamepad(event.getDevice()) && !(getCurrentFocus() instanceof EditText) &&
+            handleLibraryController(event)) return true;
         if (player != null && event.getAction() != KeyEvent.ACTION_MULTIPLE) {
             if (isGamepad(event.getDevice()) && controllerDevice != event.getDeviceId()) {
                 resetPad();
@@ -1162,6 +1465,55 @@ public final class MainActivity extends Activity {
         return super.dispatchKeyEvent(event);
     }
 
+    private boolean handleLibraryController(KeyEvent event) {
+        int count = games.length / GAME_FIELDS;
+        int step;
+        switch (event.getKeyCode()) {
+            case KeyEvent.KEYCODE_BUTTON_A:
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0)
+                    launchSelection();
+                return true;
+            case KeyEvent.KEYCODE_BUTTON_B:
+                if (search.isEmpty()) return false;
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0)
+                    loadSection(ALL_GAMES);
+                return true;
+            case KeyEvent.KEYCODE_BUTTON_X:
+            case KeyEvent.KEYCODE_BUTTON_START:
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0)
+                    showLibraryMenu();
+                return true;
+            case KeyEvent.KEYCODE_BUTTON_Y:
+                if (!loadingGames && event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0)
+                    refreshLibrary();
+                return true;
+            case KeyEvent.KEYCODE_BUTTON_L2:
+            case KeyEvent.KEYCODE_BUTTON_R2:
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                    int direction = event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_L2 ? -1 : 1;
+                    loadSection((section + direction + SECTIONS.length) % SECTIONS.length);
+                }
+                return true;
+            case KeyEvent.KEYCODE_BUTTON_L1: step = -5; break;
+            case KeyEvent.KEYCODE_BUTTON_R1: step = 5; break;
+            case KeyEvent.KEYCODE_DPAD_LEFT: step = -1; break;
+            case KeyEvent.KEYCODE_DPAD_RIGHT: step = 1; break;
+            case KeyEvent.KEYCODE_DPAD_UP: if (!listLayout) return false; step = -1; break;
+            case KeyEvent.KEYCODE_DPAD_DOWN: if (!listLayout) return false; step = 1; break;
+            default: return false;
+        }
+        if (event.getAction() == KeyEvent.ACTION_DOWN && !loadingGames && count > 0)
+            moveLibrarySelection(step);
+        return true;
+    }
+
+    private void moveLibrarySelection(int step) {
+        int position = Math.max(0, Math.min(games.length / GAME_FIELDS - 1, selection + step));
+        if (grid != null) grid.setSelection(position);
+        else carousel.setSelection(position, true);
+        selectGame(position);
+    }
+
     private static float axis(MotionEvent event, int axis) {
         InputDevice device = event.getDevice();
         InputDevice.MotionRange range = device == null ? null : device.getMotionRange(axis, event.getSource());
@@ -1171,9 +1523,20 @@ public final class MainActivity extends Activity {
     }
 
     @Override public boolean onGenericMotionEvent(MotionEvent event) {
-        if (player == null || !event.isFromSource(InputDevice.SOURCE_JOYSTICK) ||
+        if (!event.isFromSource(InputDevice.SOURCE_JOYSTICK) ||
             event.getActionMasked() != MotionEvent.ACTION_MOVE)
             return super.onGenericMotionEvent(event);
+        if (libraryVisible && !(getCurrentFocus() instanceof EditText)) {
+            float stick = axis(event, listLayout ? MotionEvent.AXIS_Y : MotionEvent.AXIS_X);
+            float hat = event.getAxisValue(listLayout ? MotionEvent.AXIS_HAT_Y : MotionEvent.AXIS_HAT_X);
+            float movement = Math.abs(hat) > Math.abs(stick) ? hat : stick;
+            int direction = movement < -0.55f ? -1 : movement > 0.55f ? 1 : 0;
+            if (direction != libraryDirection && direction != 0 && !loadingGames && games.length > 0)
+                moveLibrarySelection(direction);
+            libraryDirection = direction;
+            return true;
+        }
+        if (player == null) return super.onGenericMotionEvent(event);
         if (isGamepad(event.getDevice()) && controllerDevice != event.getDeviceId()) {
             resetPad();
             controllerDevice = event.getDeviceId();
@@ -1207,17 +1570,24 @@ public final class MainActivity extends Activity {
     @Override public void onBackPressed() {
         if (player != null) showPlayerMenu();
         else if (authenticating) cancelSignIn();
-        else if (!search.isEmpty() && games != null && !loadingGames) showLibraryAndClearSearch();
+        else if (libraryVisible && !search.isEmpty()) loadSection(ALL_GAMES);
         else super.onBackPressed();
     }
 
-    private void showLibraryAndClearSearch() {
-        search = "";
-        showLibrary(games);
-        loadGames("");
+    @Override protected void onResume() {
+        super.onResume();
+        if (libraryVisible) updateLibraryConnection();
+        if (connectivity != null && !monitoringConnection) {
+            connectivity.registerDefaultNetworkCallback(connectionListener, ui);
+            monitoringConnection = true;
+        }
     }
 
     @Override protected void onPause() {
+        if (monitoringConnection) {
+            connectivity.unregisterNetworkCallback(connectionListener);
+            monitoringConnection = false;
+        }
         if (player != null) resetPad();
         super.onPause();
     }

@@ -8,13 +8,19 @@
 #include "core/i18n.hpp"
 #include "luna/amazon_auth.hpp"
 #include "luna/luna_client.hpp"
+#include "luna/entitlement_policy.hpp"
+#include "luna/game_artwork.hpp"
 #include "luna/recent_games.hpp"
 #include "luna/search_match.hpp"
 #include "ui/image_url_policy.hpp"
 #include "webrtc/luna_stream_session.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <iterator>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <utility>
 
@@ -23,7 +29,12 @@ using namespace lunanx;
 namespace
 {
 std::shared_ptr<luna::LunaClient> client;
+std::mutex catalog_mutex;
 std::vector<luna::Game> catalog;
+std::map<std::string, size_t> catalog_index;
+std::string featured_game;
+bool catalog_explored = false;
+// Only the playback/library worker changes launch indices.
 std::vector<luna::Game> results;
 std::vector<luna::Game> top_games;
 std::vector<luna::Shelf> recent_shelves;
@@ -81,25 +92,94 @@ void report_error(JNIEnv* env, const char* message)
     env->Throw(static_cast<jthrowable>(env->NewObject(type, constructor, text)));
 }
 
-void append_shelves(std::vector<luna::Game>& games, std::set<std::string>& known,
-                    const std::vector<luna::Shelf>& shelves)
+std::string game_key(const luna::Game& game)
 {
-    for (const auto& shelf : shelves)
-        for (const auto& game : shelf.games)
-            if (luna::InsertGameKeys(known, game))
-                games.push_back(game);
+    return game.asin.empty() ? "t:" + luna::NormalizedGameTitle(game.title) : "a:" + game.asin;
+}
+
+bool merge_catalog_game(std::vector<luna::Game>& games, std::map<std::string, size_t>& index,
+                        const luna::Game& game)
+{
+    std::set<std::string> keys;
+    if (!luna::InsertGameKeys(keys, game))
+        return false;
+    size_t slot = games.size();
+    for (const auto& key : keys)
+    {
+        const auto found = index.find(key);
+        if (found != index.end())
+        {
+            slot = found->second;
+            break;
+        }
+    }
+    bool changed = true;
+    if (slot == games.size())
+        games.push_back(game);
+    else
+    {
+        auto& known = games[slot];
+        changed = luna::MergeGameArtwork(known, game);
+        if (known.offer_tag.empty() && !game.offer_tag.empty())
+        {
+            known.offer_tag = game.offer_tag;
+            changed = true;
+        }
+        if (game.premium_only && !known.premium_only)
+        {
+            known.premium_only = true;
+            changed = true;
+        }
+        if (known.publisher.empty() && !game.publisher.empty())
+        {
+            known.publisher = game.publisher;
+            changed = true;
+        }
+        if (known.genres.empty() && !game.genres.empty())
+        {
+            known.genres = game.genres;
+            changed = true;
+        }
+        if (known.age_rating.empty() && !game.age_rating.empty())
+        {
+            known.age_rating = game.age_rating;
+            changed = true;
+        }
+    }
+    for (const auto& key : keys)
+        index.emplace(key, slot);
+    return changed;
+}
+
+std::string game_details(const luna::Game& game)
+{
+    std::string details;
+    const auto append = [&](const std::string& value) {
+        if (!value.empty())
+            details += (details.empty() ? "" : " · ") + value;
+    };
+    append(game.publisher);
+    for (size_t i = 0; i < std::min<size_t>(2, game.genres.size()); ++i)
+        append(game.genres[i]);
+    append(game.age_rating);
+    return details;
 }
 
 jobjectArray game_rows(JNIEnv* env)
 {
     std::vector<std::string> rows;
-    rows.reserve(results.size() * 3);
+    rows.reserve(results.size() * 7);
     for (const auto& game : results)
     {
         rows.push_back(game.title);
         rows.push_back(ResizeAmazonImageUrl(
             game.image_portrait.empty() ? game.image_landscape : game.image_portrait, 384));
         rows.push_back(game.offer_tag);
+        rows.push_back(ResizeAmazonImageUrl(
+            game.image_landscape.empty() ? game.image_portrait : game.image_landscape, 720));
+        rows.push_back(game.premium_only ? "1" : "");
+        rows.push_back(game_key(game));
+        rows.push_back(game_details(game));
     }
     return strings(env, rows);
 }
@@ -121,19 +201,42 @@ jobjectArray connect(JNIEnv* env, const luna::DeviceRegistration& registration)
         connected->SetContentLanguage("");
         shelves = connected->FetchShelves();
     }
-    std::set<std::string> known;
     std::vector<luna::Game> games;
-    append_shelves(games, known, shelves);
-    std::vector<luna::Game> ranking;
+    std::map<std::string, size_t> index;
+    std::string featured;
     for (const auto& shelf : shelves)
+        for (const auto& game : shelf.games)
+        {
+            merge_catalog_game(games, index, game);
+            if (featured.empty() && shelf.row_type.find("FEATURED") != std::string::npos &&
+                !game.image_landscape.empty() && !game.title.empty())
+                featured = game_key(game);
+        }
+    auto ranked_shelf = std::find_if(shelves.begin(), shelves.end(), [](const auto& shelf) {
+        return shelf.row_type == "RANKINGS_ROW";
+    });
+    if (ranked_shelf == shelves.end())
+        ranked_shelf = std::find_if(shelves.begin(), shelves.end(), [](const auto& shelf) {
+            std::string title = shelf.title;
+            std::transform(title.begin(), title.end(), title.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return title.find("top") != std::string::npos;
+        });
+    std::vector<luna::Game> ranking;
+    if (ranked_shelf != shelves.end())
     {
-        if (shelf.row_type != "RANKINGS_ROW")
-            continue;
         std::set<std::string> ranked;
-        append_shelves(ranking, ranked, {shelf});
-        if (ranking.size() > 10)
-            ranking.resize(10);
-        break;
+        for (const auto& game : ranked_shelf->games)
+        {
+            if (!game.title.empty() && luna::InsertGameKeys(ranked, game))
+            {
+                const auto entry = index.find(game_key(game));
+                ranking.push_back(entry == index.end() ? game : games[entry->second]);
+                if (featured.empty() && !game.image_landscape.empty())
+                    featured = game_key(game);
+                if (ranking.size() == 10) break;
+            }
+        }
     }
     std::vector<luna::Shelf> recent;
     try
@@ -145,9 +248,15 @@ jobjectArray connect(JNIEnv* env, const luna::DeviceRegistration& registration)
     }
     top_games = std::move(ranking);
     recent_shelves = recent.empty() ? std::move(shelves) : std::move(recent);
-    client = std::move(connected);
-    catalog = std::move(games);
-    results = catalog;
+    {
+        std::lock_guard lock(catalog_mutex);
+        client = std::move(connected);
+        catalog = std::move(games);
+        catalog_index = std::move(index);
+        featured_game = std::move(featured);
+        catalog_explored = false;
+        results = catalog;
+    }
     return game_rows(env);
 }
 
@@ -255,8 +364,14 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeSignIn)(
 
 extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeSignOut)(JNIEnv* env, jobject)
 {
-    client.reset();
-    catalog.clear();
+    {
+        std::lock_guard lock(catalog_mutex);
+        client.reset();
+        catalog.clear();
+        catalog_index.clear();
+        featured_game.clear();
+        catalog_explored = false;
+    }
     results.clear();
     top_games.clear();
     recent_shelves.clear();
@@ -283,7 +398,10 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeSearch)(JNIEnv* env, 
         if (!client)
             throw std::runtime_error("Entre na conta Amazon primeiro.");
         if (query.empty())
+        {
+            std::lock_guard lock(catalog_mutex);
             results = catalog;
+        }
         else
         {
             std::vector<luna::Game> matches;
@@ -296,11 +414,9 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeSearch)(JNIEnv* env, 
             {
                 server_error = error.what();
             }
-            std::set<std::string> seen;
-            std::vector<luna::Game> combined;
+            std::lock_guard lock(catalog_mutex);
             for (const auto& game : matches)
-                if (luna::InsertGameKeys(seen, game))
-                    combined.push_back(game);
+                merge_catalog_game(catalog, catalog_index, game);
             std::vector<std::pair<int, const luna::Game*>> local;
             for (const auto& game : catalog)
             {
@@ -308,12 +424,21 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeSearch)(JNIEnv* env, 
                 if (score > 0)
                     local.emplace_back(score, &game);
             }
-            std::stable_sort(local.begin(), local.end(), [](const auto& first, const auto& second) {
-                return first.first > second.first;
+            const auto plan = client->Plan();
+            std::stable_sort(local.begin(), local.end(), [plan](const auto& first, const auto& second) {
+                if (first.first != second.first)
+                    return first.first > second.first;
+                return luna::IsIncludedInPlan(*first.second, plan) &&
+                       !luna::IsIncludedInPlan(*second.second, plan);
             });
+            std::set<std::string> seen;
+            std::vector<luna::Game> combined;
             for (const auto& match : local)
                 if (luna::InsertGameKeys(seen, *match.second))
                     combined.push_back(*match.second);
+            for (const auto& game : matches)
+                if (luna::InsertGameKeys(seen, game))
+                    combined.push_back(game);
             if (combined.empty() && !server_error.empty())
                 throw luna::LunaError(server_error);
             results = std::move(combined);
@@ -331,11 +456,29 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeSection)(JNIEnv* env,
 {
     try
     {
+        std::lock_guard lock(catalog_mutex);
         switch (section)
         {
             case 1: results = top_games; break;
             case 2: results = luna::RecentGamesForShelves(recent_shelves, luna::LoadRecentGames(), catalog); break;
-            default: results = catalog; break;
+            case 3:
+                results.clear();
+                std::copy_if(catalog.begin(), catalog.end(), std::back_inserter(results),
+                             [](const auto& game) { return game.premium_only; });
+                break;
+            default:
+            {
+                const auto plan = client ? client->Plan() : luna::AccountPlan::Unknown;
+                results.clear();
+                std::copy_if(catalog.begin(), catalog.end(), std::back_inserter(results),
+                             [plan](const auto& game) { return luna::IsIncludedInPlan(game, plan); });
+                const auto featured = std::find_if(results.begin(), results.end(), [](const auto& game) {
+                    return game_key(game) == featured_game;
+                });
+                if (featured != results.end())
+                    std::rotate(results.begin(), featured, featured + 1);
+            }
+                break;
         }
         return game_rows(env);
     }
@@ -346,29 +489,76 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeSection)(JNIEnv* env,
     }
 }
 
-extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeExplore)(
-    JNIEnv* env, jobject activity, jlong operation)
+extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeLibraryInfo)(JNIEnv* env, jobject)
+{
+    if (!client)
+        return strings(env, {"", "", "", "", "", "0"});
+    const auto profile = client->Profile();
+    const auto plan = client->Plan();
+    auto label = client->PlanLabel();
+    if (label.empty() && plan == luna::AccountPlan::Standard)
+        label = "Prime";
+    if (plan == luna::AccountPlan::Premium)
+        label = "Luna Premium";
+    std::lock_guard lock(catalog_mutex);
+    const auto included = std::count_if(catalog.begin(), catalog.end(), [plan](const auto& game) {
+        return luna::IsIncludedInPlan(game, plan);
+    });
+    return strings(env, {profile.name, profile.avatar_url, label,
+                         plan == luna::AccountPlan::Standard ? "1" : "",
+                         client->account().country, std::to_string(included)});
+}
+
+extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeExplore)(
+    JNIEnv* env, jobject activity, jlong generation, jboolean force)
 {
     try
     {
-        if (!client)
-            throw std::runtime_error("Entre na conta Amazon primeiro.");
-        auto type = env->GetObjectClass(activity);
-        auto cancelled = env->GetMethodID(type, "isCancelled", "(J)Z");
+        std::shared_ptr<luna::LunaClient> exploring;
         std::set<std::string> known;
-        for (const auto& game : catalog)
-            luna::InsertGameKeys(known, game);
-        client->ExploreCatalog(std::move(known), [&](std::vector<luna::Game> games) {
-            catalog.insert(catalog.end(), std::make_move_iterator(games.begin()),
-                           std::make_move_iterator(games.end()));
-        }, [&] { return !env->CallBooleanMethod(activity, cancelled, operation); });
-        results = catalog;
-        return game_rows(env);
+        {
+            std::lock_guard lock(catalog_mutex);
+            if (!client || (catalog_explored && force != JNI_TRUE))
+                return JNI_TRUE;
+            exploring = client;
+            for (const auto& entry : catalog_index)
+                known.insert(entry.first);
+        }
+        const auto type = env->GetObjectClass(activity);
+        const auto continue_exploring = env->GetMethodID(type, "canExploreCatalog", "(J)Z");
+        const auto on_batch = env->GetMethodID(type, "catalogBatchAdded", "(J)V");
+        if (!continue_exploring || !on_batch)
+            return JNI_FALSE;
+        const auto keep_going = [&] {
+            return env->CallBooleanMethod(activity, continue_exploring, generation) == JNI_TRUE;
+        };
+        if (!keep_going())
+            return JNI_FALSE;
+        exploring->ExploreCatalog(std::move(known), [&](std::vector<luna::Game> batch) {
+            if (!keep_going())
+                return;
+            bool added = false;
+            {
+                std::lock_guard lock(catalog_mutex);
+                if (client != exploring)
+                    return;
+                for (auto& game : batch)
+                    added = merge_catalog_game(catalog, catalog_index, game) || added;
+            }
+            if (added)
+                env->CallVoidMethod(activity, on_batch, generation);
+        }, keep_going);
+        if (!keep_going())
+            return JNI_FALSE;
+        std::lock_guard lock(catalog_mutex);
+        if (client == exploring)
+            catalog_explored = true;
+        return JNI_TRUE;
     }
     catch (const std::exception& error)
     {
         report_error(env, error.what());
-        return nullptr;
+        return JNI_FALSE;
     }
 }
 
