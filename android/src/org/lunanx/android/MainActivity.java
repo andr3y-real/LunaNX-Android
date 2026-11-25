@@ -467,25 +467,24 @@ public final class MainActivity extends Activity {
             page.addView(homeScroll, new LinearLayout.LayoutParams(-1, 0, 1));
             LinearLayout body = new LinearLayout(this);
             body.setOrientation(LinearLayout.VERTICAL);
-            body.setPadding(0, dp(4), 0, dp(12));
+            body.setPadding(dp(16), dp(4), dp(16), dp(16));
             homeScroll.addView(body, new ScrollView.LayoutParams(-1, -2));
-            sectionHeading(body, "Em destaque", "", () -> loadSection(TOP_GAMES));
+            sectionHeading(body, "Em destaque", "Jogos em alta na Luna", () -> loadSection(TOP_GAMES));
             FrameLayout featured = new FrameLayout(this);
             int available = Math.max(1, getResources().getConfiguration().screenWidthDp - 32);
-            body.addView(featured, new LinearLayout.LayoutParams(-1, dp(Math.min(360, Math.max(232, available * 3 / 5)))));
+            body.addView(featured, new LinearLayout.LayoutParams(-1, dp(Math.min(340, Math.max(155, available / 2)))));
             showFeatured(featured);
 
-            sectionHeading(body, "Continuar a jogar", "", () -> loadSection(RECENT_GAMES));
-            addHomeRail(body, rows[RECENT_GAMES], RECENT_GAMES, 10,
-                position -> launchFromHome(RECENT_GAMES, rows[RECENT_GAMES][position * GAME_FIELDS + GAME_KEY]));
+            if (rows[RECENT_GAMES].length != 0) {
+                sectionHeading(body, "Continuar a jogar", "", () -> loadSection(RECENT_GAMES));
+                addHomeRail(body, rows[RECENT_GAMES], RECENT_GAMES, 10,
+                    position -> launchFromHome(RECENT_GAMES, rows[RECENT_GAMES][position * GAME_FIELDS + GAME_KEY]));
+            }
 
-            sectionHeading(body, "Top 10", "", () -> loadSection(TOP_GAMES));
-            addHomeRail(body, rows[TOP_GAMES], TOP_GAMES, 10,
-                position -> launchFromHome(TOP_GAMES, rows[TOP_GAMES][position * GAME_FIELDS + GAME_KEY]));
-
-            sectionHeading(body, "A tua biblioteca", gameCount(games), () -> loadSection(ALL_GAMES));
-            addHomeRail(body, games, ALL_GAMES, 12,
-                position -> launchFromHome(ALL_GAMES, rows[ALL_GAMES][position * GAME_FIELDS + GAME_KEY]));
+            int recommendationSource = rows[TOP_GAMES].length == 0 ? ALL_GAMES : TOP_GAMES;
+            sectionHeading(body, recommendationSource == TOP_GAMES ? "Em alta na Luna" : "Biblioteca",
+                "", () -> loadSection(recommendationSource));
+            addFeaturedGrid(body, rows[recommendationSource], recommendationSource);
             sectionHeading(body, "Categorias", "", null);
             addCategories(body);
         } else {
@@ -522,7 +521,7 @@ public final class MainActivity extends Activity {
             new int[]{0xff241a36, LIBRARY_BACKGROUND, 0xff0c0b12}));
         getWindow().setStatusBarColor(LIBRARY_BACKGROUND);
         getWindow().setNavigationBarColor(LIBRARY_BACKGROUND);
-        page.setPadding(dp(16), dp(6), dp(16), dp(8));
+        page.setPadding(0, dp(4), 0, 0);
         setContentView(page);
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
@@ -543,7 +542,7 @@ public final class MainActivity extends Activity {
         View filters = icon("filter", "Ordenar e filtrar", this::showLibraryFilters);
         header.addView(filters, new LinearLayout.LayoutParams(dp(48), dp(48)));
         LinearLayout.LayoutParams headerSize = new LinearLayout.LayoutParams(-1, dp(56));
-        headerSize.bottomMargin = dp(10);
+        headerSize.setMargins(dp(10), 0, dp(10), dp(8));
         page.addView(header, headerSize);
         return page;
     }
@@ -560,7 +559,7 @@ public final class MainActivity extends Activity {
         LinearLayout field = new LinearLayout(this);
         field.setGravity(Gravity.CENTER_VERTICAL);
         field.setPadding(dp(6), 0, dp(6), 0);
-        field.setBackground(rounded(LIBRARY_CARD, 18));
+        field.setBackground(chrome(0xff241c34, 28));
         EditText query = new EditText(this);
         query.setSingleLine(true);
         query.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
@@ -583,7 +582,9 @@ public final class MainActivity extends Activity {
             submit.run();
             return true;
         });
-        page.addView(field, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout.LayoutParams fieldSize = new LinearLayout.LayoutParams(-1, -2);
+        fieldSize.setMargins(dp(16), dp(2), dp(16), dp(6));
+        page.addView(field, fieldSize);
         if (focusSearch) {
             focusSearch = false;
             query.requestFocus();
@@ -598,18 +599,18 @@ public final class MainActivity extends Activity {
 
     private void addBottomBar(LinearLayout page, boolean atHome) {
         LinearLayout bottom = new LinearLayout(this);
-        bottom.setPadding(dp(2), dp(4), dp(2), dp(4));
-        bottom.setBackground(chrome(0xf2181322, 24));
+        bottom.setPadding(dp(4), dp(5), dp(4), dp(8));
+        bottom.setBackgroundColor(0xff171222);
         bottom.addView(navButton("home", "Início", atHome && !settingsScreen, this::openHome),
             new LinearLayout.LayoutParams(0, -2, 1));
-        bottom.addView(navButton("search", "Pesquisar", !settingsScreen && inlineSearch, this::showLibrarySearch),
+        bottom.addView(navButton("search", "Pesquisar", false, this::showLibrarySearch),
             new LinearLayout.LayoutParams(0, -2, 1));
-        bottom.addView(navButton("grid", "Biblioteca", !atHome && !settingsScreen && !inlineSearch, () -> {
+        bottom.addView(navButton("grid", "Biblioteca", !atHome && !settingsScreen, () -> {
             if (loadingGames) return;
             inlineSearch = false;
             loadSection(ALL_GAMES);
         }), new LinearLayout.LayoutParams(0, -2, 1));
-        bottom.addView(navButton("settings", "Configurações", settingsScreen, this::showSettings),
+        bottom.addView(navButton("settings", "Ajustes", settingsScreen, this::showSettings),
             new LinearLayout.LayoutParams(0, -2, 1));
         page.addView(bottom, new LinearLayout.LayoutParams(-1, -2));
     }
@@ -624,9 +625,15 @@ public final class MainActivity extends Activity {
         tile.setPadding(dp(2), dp(6), dp(2), dp(6));
         FrameLayout marker = new FrameLayout(this);
         if (selected) marker.setBackground(rounded(0xff51376f, 15));
-        marker.addView(new LibraryIcon(symbol, color),
-            new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
-        tile.addView(marker, new LinearLayout.LayoutParams(dp(49), dp(30)));
+        View glyph = libraryGlyph(symbol, color);
+        marker.addView(glyph, new FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER));
+        tile.addView(marker, new LinearLayout.LayoutParams(dp(60), dp(34)));
+        if (selected && ValueAnimator.areAnimatorsEnabled()) {
+            glyph.setScaleX(0.92f);
+            glyph.setScaleY(0.92f);
+            glyph.animate().scaleX(1.12f).scaleY(1.12f).setDuration(190)
+                .setInterpolator(new DecelerateInterpolator()).start();
+        }
         TextView caption = text(label, 12, color);
         caption.setMaxLines(2);
         caption.setGravity(Gravity.CENTER);
@@ -643,12 +650,30 @@ public final class MainActivity extends Activity {
     private View icon(String name, String label, Runnable action) {
         FrameLayout view = new FrameLayout(this);
         view.setBackground(tapBackground(0xff30223e, 17));
-        view.addView(new LibraryIcon(name, Color.WHITE),
+        view.addView(libraryGlyph(name, Color.WHITE),
             new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
         view.setContentDescription(label);
         view.setFocusable(true);
         view.setOnClickListener(v -> action.run());
         return view;
+    }
+
+    // Android vector icons from the MIT-licensed OpenNOW Android source.
+    private View libraryGlyph(String name, int tint) {
+        int resource;
+        switch (name) {
+            case "home": resource = R.drawable.opennow_ic_tab_store; break;
+            case "grid": resource = R.drawable.opennow_ic_tab_library; break;
+            case "search": resource = R.drawable.opennow_ic_search; break;
+            case "settings": resource = R.drawable.opennow_ic_tab_settings; break;
+            case "filter": resource = R.drawable.opennow_ic_sort_filter; break;
+            default: return new LibraryIcon(name, tint);
+        }
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(resource);
+        icon.setImageTintList(ColorStateList.valueOf(tint));
+        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        return icon;
     }
 
     private GradientDrawable chrome(int fill, int radius) {
@@ -702,10 +727,6 @@ public final class MainActivity extends Activity {
             canvas.save();
             canvas.scale(getWidth() / 24f, getHeight() / 24f);
             switch (name) {
-                case "home":
-                    drawPath(canvas, 3, 11, 12, 3, 21, 11, 19, 11, 19, 21, 14, 21,
-                        14, 15, 10, 15, 10, 21, 5, 21, 5, 11, 3, 11);
-                    break;
                 case "grid":
                     for (int y = 4; y <= 13; y += 9)
                         for (int x = 4; x <= 13; x += 9)
@@ -741,23 +762,6 @@ public final class MainActivity extends Activity {
                     drawPath(canvas, 3, 9, 12, 4, 21, 9, 12, 14, 3, 9);
                     drawPath(canvas, 3, 13, 12, 18, 21, 13);
                     drawPath(canvas, 3, 17, 12, 22, 21, 17);
-                    break;
-                case "filter":
-                    drawPath(canvas, 4, 6, 20, 6);
-                    drawPath(canvas, 7, 12, 17, 12);
-                    drawPath(canvas, 10, 18, 14, 18);
-                    break;
-                case "settings":
-                    canvas.drawCircle(12, 12, 7, paint);
-                    canvas.drawCircle(12, 12, 2.5f, paint);
-                    for (int i = 0; i < 8; ++i) {
-                        canvas.drawLine(12, 2, 12, 5, paint);
-                        canvas.rotate(45, 12, 12);
-                    }
-                    break;
-                case "search":
-                    canvas.drawCircle(10, 10, 6, paint);
-                    drawPath(canvas, 15, 15, 21, 21);
                     break;
                 default:
                     canvas.drawCircle(12, 8, 3.5f, paint);
@@ -829,28 +833,51 @@ public final class MainActivity extends Activity {
         int width = Math.max(96, Math.min(156,
             (getResources().getConfiguration().screenWidthDp - 32) / 3));
         int coverHeight = Math.round(width * (1.38f));
-        LinearLayout items = rail(body, coverHeight + (int) Math.ceil(40 * getResources().getConfiguration().fontScale));
+        LinearLayout items = rail(body, coverHeight);
         for (int i = 0; i < count; ++i) {
             int offset = i * GAME_FIELDS;
             int position = i;
-            LinearLayout tile = new LinearLayout(this);
-            tile.setOrientation(LinearLayout.VERTICAL);
-            tile.setBackground(chrome(LIBRARY_CARD, 16));
-            tile.setForeground(tapBackground(Color.TRANSPARENT, 16));
-            tile.setClipToOutline(true);
-            ImageView cover = coverView(rows[offset + COVER], 14);
-            tile.addView(cover, new LinearLayout.LayoutParams(-1, dp(coverHeight)));
-            TextView title = text(rows[offset], 14, Color.WHITE);
-            title.setMaxLines(2);
-            title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            title.setPadding(dp(6), dp(3), dp(4), 0);
-            tile.addView(title);
+            ImageView tile = coverView(rows[offset + COVER], 13);
+            tile.setForeground(tapBackground(Color.TRANSPARENT, 13));
             tile.setContentDescription(rows[offset]);
             tile.setFocusable(true);
             tile.setOnClickListener(v -> choose.accept(position));
             LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(dp(width), -1);
             size.rightMargin = dp(10);
             items.addView(tile, size);
+        }
+    }
+
+    private void addFeaturedGrid(LinearLayout body, String[] rows, int source) {
+        int columns = libraryColumnsForWidth();
+        int count = Math.min(rows.length / GAME_FIELDS, columns * 2);
+        if (count == 0) {
+            body.addView(text("Nenhum jogo encontrado", 14, MUTED));
+            return;
+        }
+        int width = getResources().getConfiguration().screenWidthDp - 32;
+        int height = Math.round(Math.max(1, width - 12 * (columns - 1)) * 888f / (628f * columns));
+        for (int first = 0; first < count; first += columns) {
+            LinearLayout line = new LinearLayout(this);
+            LinearLayout.LayoutParams lineSize = new LinearLayout.LayoutParams(-1, dp(height));
+            lineSize.bottomMargin = dp(16);
+            body.addView(line, lineSize);
+            for (int column = 0; column < columns; ++column) {
+                int index = first + column;
+                View tile = new View(this);
+                if (index < count) {
+                    int offset = index * GAME_FIELDS;
+                    ImageView cover = coverView(rows[offset + COVER], 13);
+                    cover.setForeground(tapBackground(Color.TRANSPARENT, 13));
+                    cover.setContentDescription(rows[offset]);
+                    cover.setFocusable(true);
+                    cover.setOnClickListener(v -> launchFromHome(source, rows[offset + GAME_KEY]));
+                    tile = cover;
+                }
+                LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(0, -1, 1);
+                if (column != 0) size.leftMargin = dp(12);
+                line.addView(tile, size);
+            }
         }
     }
 
@@ -1098,7 +1125,7 @@ public final class MainActivity extends Activity {
         LinearLayout content = libraryPage();
         if (inlineSearch) addInlineSearch(content);
         libraryStatus = text("", 15, MUTED);
-        libraryStatus.setPadding(0, dp(8), 0, dp(8));
+        libraryStatus.setPadding(dp(16), dp(4), dp(16), dp(8));
         content.addView(libraryStatus);
         grid = new GridView(this);
         grid.setNumColumns(libraryColumns());
@@ -1106,9 +1133,9 @@ public final class MainActivity extends Activity {
         grid.setChoiceMode(GridView.CHOICE_MODE_SINGLE);
         grid.setSelector(rounded(0x55ae9aff, 12));
         grid.setDrawSelectorOnTop(true);
-        grid.setHorizontalSpacing(dp(10));
-        grid.setVerticalSpacing(dp(12));
-        grid.setPadding(0, 0, 0, dp(12));
+        grid.setHorizontalSpacing(dp(12));
+        grid.setVerticalSpacing(dp(16));
+        grid.setPadding(dp(16), dp(4), dp(16), dp(16));
         grid.setClipToPadding(false);
         grid.setOnItemClickListener((parent, view, position, id) -> {
             if (loadingGames) return;
@@ -1123,8 +1150,14 @@ public final class MainActivity extends Activity {
 
     private int libraryColumns() {
         if (listLayout) return 1;
+        return libraryColumnsForWidth();
+    }
+
+    // OpenNOW's poster grid uses fixed columns resolved from the available width and gutters.
+    private int libraryColumnsForWidth() {
         int width = getResources().getConfiguration().screenWidthDp;
-        return Math.max(2, Math.min(7, (width - 22) / 106));
+        int targetWidth = width >= 600 ? 118 : 92;
+        return Math.max(2, Math.min(8, (width - 32 + 12) / (targetWidth + 12)));
     }
 
     private void showLibraryFilters() {
@@ -1210,7 +1243,7 @@ public final class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
-        body.setPadding(0, dp(12), 0, dp(12));
+        body.setPadding(dp(16), dp(12), dp(16), dp(12));
         libraryStatus = text("", 14, MUTED);
         body.addView(libraryStatus);
         TextView title = heading("Configurações");
@@ -1584,7 +1617,7 @@ public final class MainActivity extends Activity {
                         @Override protected void onMeasure(int widthSpec, int heightSpec) {
                             int width = View.MeasureSpec.getSize(widthSpec);
                             super.onMeasure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-                                View.MeasureSpec.makeMeasureSpec(Math.round(width * 1.42f), View.MeasureSpec.EXACTLY));
+                                View.MeasureSpec.makeMeasureSpec(Math.round(width * 888f / 628f), View.MeasureSpec.EXACTLY));
                         }
                     };
                     card.setLayoutParams(new AbsListView.LayoutParams(-1, -2));
