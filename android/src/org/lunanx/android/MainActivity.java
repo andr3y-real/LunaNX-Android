@@ -10,6 +10,7 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.res.Configuration;
@@ -219,6 +220,10 @@ public final class MainActivity extends Activity {
     private native String[] nativeStatus();
     private native boolean nativeSetVideoSurface(Surface surface);
     private native void nativeStop();
+    private native boolean nativeSetMicrophone(boolean enabled);
+    private native boolean nativeMicrophoneActive();
+    private volatile boolean microphoneEnabled;
+    private long microphonePermissionOperation;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -2035,6 +2040,7 @@ public final class MainActivity extends Activity {
         playbackReport = new PlaybackReport(SystemClock.elapsedRealtime(),
             playerProfile.name + " · " + playerProfile.videoSummary());
         launching = true;
+        microphoneEnabled = false;
         showMetrics = playerProfile.metrics;
         touchControlsOverride = null;
         playerShortcutsVisible = false;
@@ -2269,6 +2275,43 @@ public final class MainActivity extends Activity {
             new int[]{BACKGROUND, Color.WHITE}));
     }
 
+    private void changeMicrophone(boolean enabled) {
+        long token = operation;
+        worker.execute(() -> {
+            if (isCancelled(token)) return;
+            boolean changed = nativeSetMicrophone(enabled);
+            microphoneEnabled = enabled && changed;
+            post(token, () -> Toast.makeText(this, changed
+                ? (enabled ? "Microfone ativado" : "Microfone desativado")
+                : "Não foi possível abrir o microfone. Confira a permissão e tente novamente.",
+                Toast.LENGTH_LONG).show());
+        });
+    }
+
+    private void toggleMicrophone() {
+        if (microphoneEnabled) {
+            changeMicrophone(false);
+            return;
+        }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            microphonePermissionOperation = operation;
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, 701);
+            return;
+        }
+        changeMicrophone(true);
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode != 701 || player == null || launching ||
+                operation != microphonePermissionOperation) return;
+        if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED)
+            changeMicrophone(true);
+        else Toast.makeText(this, "Permita o acesso ao microfone para falar no jogo.",
+            Toast.LENGTH_LONG).show();
+    }
+
     private void showPlayerMenu() {
         if (player == null || launching || playerMenu != null) return;
         resetPad();
@@ -2325,6 +2368,13 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams touchPosition = new LinearLayout.LayoutParams(0, dp(44), 1);
         touchPosition.setMarginStart(dp(5));
         actions.addView(touch, touchPosition);
+        Button microphone = playerAction(microphoneEnabled ? "Desativar microfone" : "Ativar microfone", view -> {
+            if (playerMenu != null) playerMenu.dismiss();
+            toggleMicrophone();
+        });
+        LinearLayout.LayoutParams microphonePosition = new LinearLayout.LayoutParams(-1, dp(44));
+        microphonePosition.topMargin = dp(6);
+        content.addView(microphone, microphonePosition);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(content);
         AlertDialog dialog = new AlertDialog.Builder(this)
@@ -2503,6 +2553,12 @@ public final class MainActivity extends Activity {
                         previousRumble = rumble;
                         post(token, () -> updateRumble(rumble));
                     }
+                    if (microphoneEnabled && !nativeMicrophoneActive()) {
+                        microphoneEnabled = false;
+                        post(token, () -> Toast.makeText(MainActivity.this,
+                            "Microfone interrompido. Ative novamente no menu do player.",
+                            Toast.LENGTH_LONG).show());
+                    }
                     long now = SystemClock.elapsedRealtime();
                     if (now - checkedAt < 250) return;
                     checkedAt = now;
@@ -2607,6 +2663,7 @@ public final class MainActivity extends Activity {
     }
 
     private void stopPlaybackAsync(PlaybackReport report) {
+        microphoneEnabled = false;
         String game = playerTitle;
         String profileName = playerProfile == null ? "" : playerProfile.name;
         worker.execute(() -> {
@@ -3171,6 +3228,11 @@ public final class MainActivity extends Activity {
     @Override protected void onPause() {
         if (player != null) resetPad();
         super.onPause();
+        microphoneEnabled = false;
+        worker.execute(() -> {
+            nativeSetMicrophone(false);
+            microphoneEnabled = false;
+        });
     }
 
     @Override protected void onDestroy() {

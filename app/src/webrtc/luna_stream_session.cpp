@@ -292,7 +292,12 @@ void LunaStreamSession::signaling_loop()
             const auto transport = luna::ParseLocalTransport(local ? local : "");
             if (transport.ice_ufrag.empty() || transport.fingerprint.empty())
                 throw luna::LunaError(Tr("Offre WebRTC locale incomplète"));
+#ifdef __ANDROID__
+            // Match libpeer's Opus sender SSRC to the advertised audio track.
+            offer = luna::BuildLunaOffer(transport, 6);
+#else
             offer = luna::BuildLunaOffer(transport);
+#endif
         }
         AppendStreamLog("SDP offer\n" + offer);
         if (stop_requested_.load())
@@ -645,6 +650,9 @@ void LunaStreamSession::request_stop()
 void LunaStreamSession::stop()
 {
     request_stop();
+#ifdef __ANDROID__
+    microphone_.stop();
+#endif
     if (signaling_thread_.joinable())
         signaling_thread_.join();
     if (network_thread_.joinable())
@@ -1126,6 +1134,22 @@ StreamCounters LunaStreamSession::stream_counters() const
 }
 
 #ifdef __ANDROID__
+bool LunaStreamSession::set_microphone_enabled(bool enabled)
+{
+    if (!enabled)
+    {
+        microphone_.stop();
+        return true;
+    }
+    if (phase() != Phase::Streaming || stop_requested_.load())
+        return false;
+    return microphone_.start([this](const uint8_t* data, size_t size) {
+        std::lock_guard<std::recursive_mutex> lock(peer_mutex_);
+        if (pc_ && !stop_requested_.load())
+            peer_connection_send_audio(pc_, data, size);
+    });
+}
+
 bool LunaStreamSession::set_android_surface(ANativeWindow* window)
 {
     if (!decoder_ || !decoder_running_.load())

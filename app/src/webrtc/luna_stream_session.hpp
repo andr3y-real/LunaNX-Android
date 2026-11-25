@@ -12,6 +12,7 @@
 #include "stream/audio/AudioPipeline.hpp"
 #ifdef __ANDROID__
 #include "android_video_decoder.hpp"
+#include "android_microphone.hpp"
 #else
 #include "stream/IVideoRenderer.hpp"
 #include "stream/ffmpeg/FFmpegVideoDecoder.hpp"
@@ -100,6 +101,8 @@ class LunaStreamSession
     };
     AndroidVideoStats android_video_stats();
     bool set_android_surface(ANativeWindow* window);
+    bool set_microphone_enabled(bool enabled);
+    bool microphone_active() const { return microphone_.active(); }
 #endif
     bool input_ready() const { return input_sid_ >= 0; }
     const StreamSettings& settings() const { return settings_; }
@@ -114,6 +117,9 @@ class LunaStreamSession
     void on_rtp_sender_report(uint32_t ssrc, uint64_t ntp_us, uint32_t rtp_timestamp);
 
   private:
+#ifdef __ANDROID__
+    AndroidMicrophone microphone_;
+#endif
     struct DecodeUnit
     {
         std::vector<uint8_t> data;

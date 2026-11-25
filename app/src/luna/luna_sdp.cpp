@@ -82,9 +82,9 @@ LocalTransport ParseLocalTransport(const std::string& libpeer_sdp)
     return transport;
 }
 
-std::string BuildLunaOffer(const LocalTransport& t)
+std::string BuildLunaOffer(const LocalTransport& t, unsigned long outgoing_audio_ssrc)
 {
-    const unsigned long audio_ssrc = RandomSsrc();
+    const unsigned long audio_ssrc = outgoing_audio_ssrc ? outgoing_audio_ssrc : RandomSsrc();
     std::string sdp;
     char origin[96];
     std::snprintf(origin, sizeof(origin), "o=- %lu%06lu 2 IN IP4 127.0.0.1",
@@ -119,7 +119,7 @@ std::string BuildLunaOffer(const LocalTransport& t)
     Append(sdp, "a=rtpmap:97 rtx/90000");
     Append(sdp, "a=fmtp:97 apt=96");
 
-    // Audio : Opus stéréo. Le serveur ouvre la voie en sendrecv (micro) ; on n'envoie rien.
+    // Audio Opus bidirectionnel, avec le SSRC de la piste locale.
     Append(sdp, "m=audio 9 UDP/TLS/RTP/SAVPF 111");
     Append(sdp, "c=IN IP4 0.0.0.0");
     Append(sdp, "a=rtcp:9 IN IP4 0.0.0.0");

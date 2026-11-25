@@ -593,6 +593,16 @@ extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeStart)(
     }
 }
 
+extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeSetMicrophone)(JNIEnv*, jobject, jboolean enabled)
+{
+    return session && session->set_microphone_enabled(enabled == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeMicrophoneActive)(JNIEnv*, jobject)
+{
+    return session && session->microphone_active() ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT jint JNICALL JNI_METHOD(nativeTick)(
     JNIEnv*, jobject, jint buttons, jfloat lt, jfloat rt, jfloat x, jfloat y, jfloat z, jfloat rz)
 {

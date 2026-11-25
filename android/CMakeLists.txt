@@ -15,6 +15,7 @@ list(REMOVE_ITEM PEER_SOURCES "${PEER}/peer_signaling.c" "${PEER}/ssl_transport.
 add_library(lunanx SHARED
     native/bridge.cpp
     native/android_video_decoder.cpp
+    native/android_microphone.cpp
     native/android_audio_pipeline.cpp
     native/android_rumble.cpp
     "${APP}/core/app_paths.cpp"
