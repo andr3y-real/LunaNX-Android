@@ -1,33 +1,33 @@
 # LunaNX Android
 
-O LunaNX nasceu no Nintendo Switch. Este fork leva o cliente para o Android, com a biblioteca do Amazon Luna, busca e reprodução em tela cheia. Dá pra jogar com controle Bluetooth, USB ou com os botões na tela.
+LunaNX started on the Nintendo Switch. This fork brings the client to Android, where you can browse and search your Amazon Luna library, then play in fullscreen with a Bluetooth controller, a USB controller, or on-screen controls.
 
-O port é experimental e pede Android 9 ou superior em um aparelho ARM64, além de uma conta com acesso ao Amazon Luna. A disponibilidade dos jogos depende da região e do plano da conta.
+The port is experimental. You'll need an ARM64 device running Android 9 or later and an Amazon account with Luna access. Your region and plan determine which games are available.
 
-## Como jogar
+## Playing a game
 
-1. Abra o app, escolha o país da sua conta Amazon e gere um código. Confirme o código na página da Amazon indicada pelo app.
-2. Escolha um jogo na biblioteca. Com um controle físico conectado, os botões do player saem da tela.
-3. Dê dois toques na imagem ou aperte **Start + Select** pra abrir o menu. Ali você pode ajustar o enquadramento, mostrar as métricas ou sair da partida.
+1. Open the app, select your Amazon account's country, and generate a sign-in code. Enter it on the Amazon page shown in the app.
+2. Pick a game from your library. The on-screen buttons disappear when you connect a physical controller.
+3. Double-tap the video or press **Start + Select** to open the player menu. From there, you can adjust how the video fits the screen, show playback metrics, or leave the game.
 
-Em **Conta → Idioma dos jogos**, dá pra pedir português do Brasil no próximo lançamento. A preferência é experimental. O idioma disponível e a forma de selecionar áudio ou legendas variam por jogo.
+To request Brazilian Portuguese for the next game you launch, open **Conta → Idioma dos jogos** (Account → Game language). This setting is experimental. Available languages and the controls for changing audio or subtitles vary by game.
 
-## Como compilar
+## Building on Linux
 
-No Linux, instale JDK 17 ou superior, Python 3.12 ou superior, CMake e Ninja. No Android SDK, instale a plataforma 35, o Build-Tools e um NDK. Aponte `ANDROID_SDK_ROOT` e `ANDROID_NDK_HOME` para as instalações. Na raiz do repositório, rode o comando abaixo.
+Install JDK 17 or later, Python 3.12 or later, CMake, and Ninja. Install Android SDK Platform 35, SDK Build Tools, and an Android NDK. Set `ANDROID_SDK_ROOT` and `ANDROID_NDK_HOME` to their installation directories, then run this command from the repository root.
 
 ```sh
 JOBS=4 sh android/build-apk.sh
 ```
 
-O APK sai em `android/build/LunaNX-Android.apk`. O script cria uma chave de desenvolvimento na primeira build. Para atualizar uma instalação existente, use a mesma chave que assinou o APK instalado.
+The APK is written to `android/build/LunaNX-Android.apk`. The script generates a development signing key on the first build. To update an existing installation, sign the new APK with the same key as the installed one.
 
-## Se o vídeo engasgar
+## If playback stutters
 
-Abra **Métricas** no player. Se abrir uma issue, inclua a versão do app, o modelo do aparelho e os números de FPS recebido e decodificado, descartes RTP e resets. Diga também se estava espelhando pra uma TV. Sessões da Amazon e chaves de assinatura devem ficar no seu aparelho.
+Open **Métricas** (Metrics) in the player menu. If you file an issue, include the app version, your device model, the incoming and decoded FPS, RTP drops, and reset counts. Mention whether you were mirroring the screen to a TV. Keep Amazon session credentials and signing keys on your device.
 
-## Origem e licença
+## Credits and license
 
-Este fork modifica o LunaNX 3.1 para Android. O port inclui interface nativa, vídeo H.264 via MediaCodec assíncrono, áudio via AAudio e suporte a controles Android. As alterações do port foram publicadas em 25 de novembro de 2026.
+This fork ports LunaNX 3.1 to Android. It adds a native interface, H.264 video through asynchronous MediaCodec, AAudio playback, and Android controller support. The port changes were first published on November 25, 2026.
 
-O projeto original é do **KazaR‑RooT**. O LunaNX Android é um projeto comunitário independente da Amazon e da Nintendo. Consulte o [LunaNX original](https://github.com/kazar-root/LunaNX), a [GPL‑3.0](LICENSE) e os [créditos das dependências](THIRD_PARTY_NOTICES.md).
+**KazaR‑RooT** created the original LunaNX. LunaNX Android is a community project independent of Amazon and Nintendo. See the [original LunaNX project](https://github.com/kazar-root/LunaNX), the [GPL‑3.0 license](LICENSE), and the [third-party notices](THIRD_PARTY_NOTICES.md).
