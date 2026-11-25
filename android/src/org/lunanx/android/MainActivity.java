@@ -124,7 +124,6 @@ public final class MainActivity extends Activity {
     private int catalogSort;
     private int[] visiblePositions = new int[0];
     private String homeGenre = "";
-    private int featuredPosition;
     private int homeScrollPosition;
     private String[][] homeRows;
     private ScrollView homeScroll;
@@ -405,7 +404,6 @@ public final class MainActivity extends Activity {
             libraryInfo = info;
             homeGenre = "";
             homeScrollPosition = 0;
-            featuredPosition = 0;
             showHome(rows);
             startCatalogDiscovery(false);
         });
@@ -469,22 +467,14 @@ public final class MainActivity extends Activity {
             body.setOrientation(LinearLayout.VERTICAL);
             body.setPadding(dp(16), dp(4), dp(16), dp(16));
             homeScroll.addView(body, new ScrollView.LayoutParams(-1, -2));
-            sectionHeading(body, "Em destaque", "Jogos em alta na Luna", () -> loadSection(TOP_GAMES));
-            FrameLayout featured = new FrameLayout(this);
-            int available = Math.max(1, getResources().getConfiguration().screenWidthDp - 32);
-            body.addView(featured, new LinearLayout.LayoutParams(-1, dp(Math.min(340, Math.max(155, available / 2)))));
-            showFeatured(featured);
+            sectionHeading(body, "Biblioteca", gameCount(rows[ALL_GAMES]), () -> loadSection(ALL_GAMES));
+            addCatalogPreview(body, rows[ALL_GAMES]);
+            addSpotlight(body, rows[TOP_GAMES]);
 
             if (rows[RECENT_GAMES].length != 0) {
                 sectionHeading(body, "Continuar a jogar", "", () -> loadSection(RECENT_GAMES));
-                addHomeRail(body, rows[RECENT_GAMES], RECENT_GAMES, 10,
-                    position -> launchFromHome(RECENT_GAMES, rows[RECENT_GAMES][position * GAME_FIELDS + GAME_KEY]));
+                addRecentCovers(body, rows[RECENT_GAMES]);
             }
-
-            int recommendationSource = rows[TOP_GAMES].length == 0 ? ALL_GAMES : TOP_GAMES;
-            sectionHeading(body, recommendationSource == TOP_GAMES ? "Em alta na Luna" : "Biblioteca",
-                "", () -> loadSection(recommendationSource));
-            addFeaturedGrid(body, rows[recommendationSource], recommendationSource);
             sectionHeading(body, "Categorias", "", null);
             addCategories(body);
         } else {
@@ -822,33 +812,23 @@ public final class MainActivity extends Activity {
         return image;
     }
 
-    private void addHomeRail(LinearLayout body, String[] rows, int source, int limit,
-                             java.util.function.IntConsumer choose) {
-        int count = Math.min(limit, rows.length / GAME_FIELDS);
-        if (count == 0) {
-            body.addView(text(source == TOP_GAMES ? "O ranking não está disponível" :
-                "Nenhum jogo encontrado", 12, MUTED));
-            return;
-        }
-        int width = Math.max(96, Math.min(156,
-            (getResources().getConfiguration().screenWidthDp - 32) / 3));
-        int coverHeight = Math.round(width * (1.38f));
-        LinearLayout items = rail(body, coverHeight);
-        for (int i = 0; i < count; ++i) {
-            int offset = i * GAME_FIELDS;
-            int position = i;
-            ImageView tile = coverView(rows[offset + COVER], 13);
-            tile.setForeground(tapBackground(Color.TRANSPARENT, 13));
+    private void addRecentCovers(LinearLayout body, String[] rows) {
+        int width = Math.min(96, Math.max(76, getResources().getConfiguration().screenWidthDp / 4));
+        LinearLayout items = rail(body, Math.round(width * 888f / 628f));
+        for (int offset = 0; offset < Math.min(rows.length, 8 * GAME_FIELDS); offset += GAME_FIELDS) {
+            String key = rows[offset + GAME_KEY];
+            ImageView tile = coverView(rows[offset + COVER], 12);
+            tile.setForeground(tapBackground(Color.TRANSPARENT, 12));
             tile.setContentDescription(rows[offset]);
             tile.setFocusable(true);
-            tile.setOnClickListener(v -> choose.accept(position));
+            tile.setOnClickListener(v -> launchFromHome(RECENT_GAMES, key));
             LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(dp(width), -1);
             size.rightMargin = dp(10);
             items.addView(tile, size);
         }
     }
 
-    private void addFeaturedGrid(LinearLayout body, String[] rows, int source) {
+    private void addCatalogPreview(LinearLayout body, String[] rows) {
         int columns = libraryColumnsForWidth();
         int count = Math.min(rows.length / GAME_FIELDS, columns * 2);
         if (count == 0) {
@@ -871,7 +851,7 @@ public final class MainActivity extends Activity {
                     cover.setForeground(tapBackground(Color.TRANSPARENT, 13));
                     cover.setContentDescription(rows[offset]);
                     cover.setFocusable(true);
-                    cover.setOnClickListener(v -> launchFromHome(source, rows[offset + GAME_KEY]));
+                    cover.setOnClickListener(v -> launchFromHome(ALL_GAMES, rows[offset + GAME_KEY]));
                     tile = cover;
                 }
                 LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(0, -1, 1);
@@ -881,110 +861,72 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void showFeatured(FrameLayout frame) {
-        frame.removeAllViews();
-        String[] preferred = homeRows[TOP_GAMES];
-        int source = preferred.length == 0 ? ALL_GAMES : TOP_GAMES;
-        String[] rows = homeRows[source];
-        frame.setVisibility(rows.length == 0 ? View.GONE : View.VISIBLE);
-        if (rows.length == 0) return;
-        int offset = Math.min(featuredPosition, rows.length / GAME_FIELDS - 1) * GAME_FIELDS;
-        frame.setBackground(chrome(LIBRARY_CARD, 24));
-        frame.setClipToOutline(true);
-        ImageView background = coverView(rows[offset + BACKDROP], 24);
-        background.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        frame.addView(background, new FrameLayout.LayoutParams(-1, -1));
-        View shade = new View(this);
-        shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-            new int[]{0x10111019, 0x29111019, 0xf9111019}));
-        frame.addView(shade, new FrameLayout.LayoutParams(-1, -1));
-        LinearLayout detail = new LinearLayout(this);
-        detail.setOrientation(LinearLayout.VERTICAL);
-        detail.setGravity(Gravity.BOTTOM);
-        detail.setPadding(dp(16), dp(10), dp(16), dp(12));
-        TextView title = text(rows[offset], 27, Color.WHITE);
+    private void addSpotlight(LinearLayout body, String[] top) {
+        if (top.length == 0) return;
+        sectionHeading(body, "Em destaque", "", () -> loadSection(TOP_GAMES));
+        LinearLayout card = new LinearLayout(this);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(10), dp(10), dp(12), dp(10));
+        card.setBackground(chrome(LIBRARY_CARD, 18));
+        card.setForeground(tapBackground(Color.TRANSPARENT, 18));
+        card.setFocusable(true);
+        card.setContentDescription("Jogar " + top[0]);
+        card.setOnClickListener(v -> launchFromHome(TOP_GAMES, top[GAME_KEY]));
+        card.addView(coverView(top[COVER], 10), new LinearLayout.LayoutParams(dp(58), dp(80)));
+
+        LinearLayout labels = new LinearLayout(this);
+        labels.setOrientation(LinearLayout.VERTICAL);
+        labels.setPadding(dp(12), 0, dp(8), 0);
+        TextView title = text(top[0], 18, Color.WHITE);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setMaxLines(2);
         title.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        detail.addView(title);
-        TextView description = text(rows[offset + DETAILS], 14, MUTED);
-        description.setMaxLines(2);
-        description.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        detail.addView(description);
-        LinearLayout controls = new LinearLayout(this);
-        controls.setGravity(Gravity.CENTER_VERTICAL);
-        TextView play = libraryAction("▶  Jogar", true, () -> launchFromHome(source, rows[offset + GAME_KEY]));
-        controls.addView(play, new LinearLayout.LayoutParams(-2, -2));
-        int count = Math.min(6, rows.length / GAME_FIELDS);
-        if (count > 1) {
-            controls.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-            LinearLayout dots = new LinearLayout(this);
-            dots.setGravity(Gravity.CENTER);
-            dots.setBackground(tapBackground(0xd11b1327, 18));
-            dots.setPadding(dp(10), 0, dp(10), 0);
-            dots.setFocusable(true);
-            dots.setContentDescription("Destaque " + (offset / GAME_FIELDS + 1) + " de " + count + ". Próximo");
-            dots.setOnClickListener(v -> changeFeatured(frame, offset / GAME_FIELDS, 1, count));
-            for (int i = 0; i < count; ++i) {
-                boolean selected = i == offset / GAME_FIELDS;
-                View dot = new View(this);
-                dot.setBackground(rounded(selected ? LIBRARY_SELECTED : 0x99b3a4c6, 10));
-                LinearLayout.LayoutParams dotSize = new LinearLayout.LayoutParams(dp(selected ? 18 : 5), dp(5));
-                dotSize.setMargins(dp(3), 0, dp(3), 0);
-                dots.addView(dot, dotSize);
-            }
-            controls.addView(dots, new LinearLayout.LayoutParams(-2, dp(48)));
-            GestureDetector swipe = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
-                @Override public boolean onDown(MotionEvent e) { return true; }
-                @Override public boolean onFling(MotionEvent down, MotionEvent up, float vx, float vy) {
-                    if (down == null || up == null) return false;
-                    float dx = up.getX() - down.getX();
-                    float dy = up.getY() - down.getY();
-                    if (Math.abs(dx) < dp(40) || Math.abs(dx) <= Math.abs(dy)) return false;
-                    changeFeatured(frame, offset / GAME_FIELDS, dx < 0 ? 1 : -1, count);
-                    return true;
-                }
-            });
-            frame.setOnTouchListener((v, e) -> swipe.onTouchEvent(e));
-        } else frame.setOnTouchListener(null);
-        detail.addView(controls);
-        frame.addView(detail, new FrameLayout.LayoutParams(-1, -1));
-    }
-
-    private void changeFeatured(FrameLayout frame, int current, int step, int count) {
-        featuredPosition = (current + step + count) % count;
-        showFeatured(frame);
-        if (ValueAnimator.areAnimatorsEnabled()) {
-            View artwork = frame.getChildAt(0);
-            artwork.setTranslationX(dp(24) * step);
-            artwork.animate().translationX(0).setDuration(250).setInterpolator(new DecelerateInterpolator()).start();
-            enterLibraryView(frame.getChildAt(2), 25, 8);
+        labels.addView(title);
+        if (!top[DETAILS].isEmpty()) {
+            TextView details = text(top[DETAILS], 13, MUTED);
+            details.setMaxLines(2);
+            details.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            labels.addView(details);
         }
+        card.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView play = text("▶", 17, LIBRARY_SELECTED);
+        play.setGravity(Gravity.CENTER);
+        play.setBackground(rounded(0xff3d2c54, 16));
+        card.addView(play, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        body.addView(card);
     }
 
     private void addCategories(LinearLayout body) {
-        LinearLayout items = rail(body, 50);
+        LinearLayout items = null;
+        int columns = getResources().getConfiguration().screenWidthDp >= 520 ? 3 : 2;
         String[] names = {"Ação", "Aventura", "Simulação", "Indie", "Mais"};
         String[] symbols = {"action", "adventure", "simulation", "indie", "grid"};
         for (int i = 0; i < names.length; ++i) {
+            if (i % columns == 0) {
+                items = new LinearLayout(this);
+                LinearLayout.LayoutParams rowSize = new LinearLayout.LayoutParams(-1, -2);
+                rowSize.bottomMargin = dp(8);
+                body.addView(items, rowSize);
+            }
             String name = names[i];
             LinearLayout chip = new LinearLayout(this);
             chip.setGravity(Gravity.CENTER);
-            chip.setPadding(dp(9), 0, dp(9), 0);
+            chip.setPadding(dp(6), dp(6), dp(6), dp(6));
+            chip.setMinimumHeight(dp(48));
             chip.addView(new LibraryIcon(symbols[i], Color.WHITE),
                 new LinearLayout.LayoutParams(dp(14), dp(14)));
             TextView label = text(name, 14, Color.WHITE);
             label.setPadding(dp(5), 0, 0, 0);
             chip.addView(label);
             chip.setContentDescription(name);
-            chip.setBackground(rounded(LIBRARY_CARD, 8));
+            chip.setBackground(tapBackground(LIBRARY_CARD, 13));
             chip.setFocusable(true);
             chip.setOnClickListener(v -> {
                 if (name.equals("Mais")) showCategories();
                 else openCategory(name);
             });
-            LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(-2, dp(48));
-            size.rightMargin = dp(6);
+            LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(0, -2, 1);
+            if (i % columns != 0) size.leftMargin = dp(8);
             items.addView(chip, size);
         }
     }
