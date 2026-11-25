@@ -10,6 +10,8 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.content.pm.ActivityInfo;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -159,6 +161,7 @@ public final class MainActivity extends Activity {
     private boolean showMetrics;
     private boolean touchControls = true;
     private ScheduledFuture<?> playbackTicker;
+    private PlaybackReport playbackReport;
     private String playerTitle;
     private int padButtons;
     private int hatButtons;
@@ -1816,6 +1819,7 @@ public final class MainActivity extends Activity {
         ++catalogGeneration;
         selectedGame = index;
         playerTitle = games[index * GAME_FIELDS];
+        playbackReport = new PlaybackReport(SystemClock.elapsedRealtime());
         showMetrics = false;
         videoSurfaceError = null;
         playerFraming = PlayerFraming.fromPreference(
@@ -2122,6 +2126,7 @@ public final class MainActivity extends Activity {
         try {
             boolean preferPortuguese = getPreferences(MODE_PRIVATE).getBoolean("prefer_pt_br", false);
             nativeStart(selectedGame, target, preferPortuguese);
+            PlaybackReport report = playbackReport;
             playbackTicker = worker.scheduleWithFixedDelay(new Runnable() {
                 long checkedAt;
                 long sampledAt;
@@ -2147,7 +2152,8 @@ public final class MainActivity extends Activity {
                     long bytes = Long.parseLong(status[2]);
                     long received = Long.parseLong(status[4]);
                     long decoded = Long.parseLong(status[5]);
-                    if (sampledAt == 0 || now - sampledAt >= 1000) {
+                    if (sampledAt == 0 || now - sampledAt >= 1000 || phase >= ENDED) {
+                        report.sample(now, phase, bytes, received, decoded, status);
                         long elapsed = now - sampledAt;
                         if (sampledAt != 0) {
                             double mbps = (bytes - lastBytes) * 0.008 / elapsed;
@@ -2183,6 +2189,7 @@ public final class MainActivity extends Activity {
 
     private void leavePlayer() {
         if (player == null) return;
+        PlaybackReport report = playbackReport;
         ++operation;
         player = null;
         if (playerMenu != null) playerMenu.dismiss();
@@ -2193,7 +2200,7 @@ public final class MainActivity extends Activity {
         controllerDevice = -1;
         gamepadConnected = false;
         resetPad();
-        stopPlaybackAsync();
+        stopPlaybackAsync(report);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().getDecorView().setSystemUiVisibility(0);
         setRequestedOrientation(returnOrientation);
@@ -2207,12 +2214,52 @@ public final class MainActivity extends Activity {
         startCatalogDiscovery(false);
     }
 
-    private void stopPlaybackAsync() {
+    private void stopPlaybackAsync(PlaybackReport report) {
         worker.execute(() -> {
             if (playbackTicker != null) playbackTicker.cancel(false);
             playbackTicker = null;
+            long now = SystemClock.elapsedRealtime();
+            if (report != null) {
+                String[] status = nativeStatus();
+                if (status != null) {
+                    report.sample(now, Integer.parseInt(status[0]), Long.parseLong(status[2]),
+                        Long.parseLong(status[4]), Long.parseLong(status[5]), status);
+                }
+            }
             nativeStop();
+            if (report == null) return;
+            String summary = report.format(now);
+            ui.post(() -> {
+                if (!destroyed && player == null && libraryVisible && playbackReport == report)
+                    showPlaybackReport(summary);
+            });
         });
+    }
+
+    private void showPlaybackReport(String summary) {
+        Dialog dialog = new Dialog(this);
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackground(chrome(0xff20172d, 26));
+        scroll.setClipToOutline(true);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(18), dp(16), dp(18), dp(16));
+        scroll.addView(panel);
+        TextView report = text(summary, 14, Color.WHITE);
+        report.setTextIsSelectable(true);
+        report.setPadding(0, 0, 0, dp(16));
+        panel.addView(report);
+        panel.addView(libraryAction("Copiar relatório", true, () -> {
+            ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(ClipData.newPlainText("Relatório de partida LunaNX", summary));
+                dialog.dismiss();
+            }
+        }));
+        LinearLayout.LayoutParams close = new LinearLayout.LayoutParams(-1, -2);
+        close.topMargin = dp(8);
+        panel.addView(libraryAction("Fechar", false, dialog::dismiss), close);
+        showLibraryDialog(dialog, scroll);
     }
 
     // Classic touch skin geometry adapted from OpenNOW Android (Zortos, MIT).
@@ -2637,7 +2684,7 @@ public final class MainActivity extends Activity {
         if (inputManager != null) inputManager.unregisterInputDeviceListener(inputListener);
         ++operation;
         if (playerMenu != null) playerMenu.dismiss();
-        if (player != null) stopPlaybackAsync();
+        if (player != null) stopPlaybackAsync(null);
         super.onDestroy();
     }
 }

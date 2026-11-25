@@ -16,7 +16,7 @@ aapt2 link -I "$jar" --manifest AndroidManifest.xml --java build/generated \
 
 javac -encoding UTF-8 --release 8 -proc:none -cp "$jar" -d build/classes \
     build/generated/org/lunanx/android/R.java src/org/lunanx/android/MainActivity.java \
-    src/org/lunanx/android/PlayerFraming.java
+    src/org/lunanx/android/PlayerFraming.java src/org/lunanx/android/PlaybackReport.java
 jar cf build/java-classes.jar -C build/classes .
 d8 --release --min-api 28 --lib "$jar" --output build/dex build/java-classes.jar
 llvm-strip --strip-unneeded -o build/liblunanx.so build/native/liblunanx.so
