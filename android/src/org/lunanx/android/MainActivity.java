@@ -158,10 +158,14 @@ public final class MainActivity extends Activity {
     private TextView metricDetails;
     private View controls;
     private View playerMenuButton;
+    private View showTouchButton;
+    private boolean playerShortcutsVisible;
+    private final Runnable hidePlayerShortcuts = () -> setPlayerShortcuts(false);
     private SurfaceView playerSurface;
     private AlertDialog playerMenu;
     private PlayerFraming playerFraming;
     private StreamProfile playerProfile;
+    private android.net.wifi.WifiManager.WifiLock playbackWifiLock;
     private InputManager inputManager;
     private boolean gamepadConnected;
     private final InputManager.InputDeviceListener inputListener = new InputManager.InputDeviceListener() {
@@ -174,7 +178,7 @@ public final class MainActivity extends Activity {
     private String search = "";
     private int section;
     private volatile boolean showMetrics;
-    private boolean touchControls = true;
+    private Boolean touchControlsOverride;
     private ScheduledFuture<?> playbackTicker;
     private PlaybackReport playbackReport;
     private String playerTitle;
@@ -2032,6 +2036,8 @@ public final class MainActivity extends Activity {
             playerProfile.name + " · " + playerProfile.videoSummary());
         launching = true;
         showMetrics = playerProfile.metrics;
+        touchControlsOverride = null;
+        playerShortcutsVisible = false;
         videoSurfaceError = null;
         playerFraming = playerProfile.custom() ? playerProfile.framing : defaultFraming();
         player = new FrameLayout(this);
@@ -2107,8 +2113,12 @@ public final class MainActivity extends Activity {
         });
         GestureDetector gestures = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent event) { return true; }
+            @Override public boolean onSingleTapConfirmed(MotionEvent event) {
+                if (player == current && !launching) revealPlayerShortcuts();
+                return true;
+            }
             @Override public boolean onDoubleTap(MotionEvent event) {
-                showPlayerMenu();
+                if (player == current) showPlayerMenu();
                 return true;
             }
         });
@@ -2120,11 +2130,20 @@ public final class MainActivity extends Activity {
         streamStatus.setBackground(rounded(0xd91c2030, 12));
         current.addView(streamStatus, floating(-2, -2, Gravity.CENTER, 16));
 
-        Button menu = playerAction("⋯", view -> showPlayerMenu());
-        menu.setTextSize(24);
-        menu.setContentDescription("Abrir menu do player");
+        controls = touchOverlay();
+        current.addView(controls, new FrameLayout.LayoutParams(-1, -1));
+
+        TextView menu = playerShortcut("⋯", "Abrir menu do player", this::showPlayerMenu);
+        menu.setTextSize(21);
         playerMenuButton = menu;
-        current.addView(menu, floating(dp(54), dp(44), Gravity.TOP | Gravity.START, 12));
+        current.addView(menu, floating(dp(44), dp(44), Gravity.TOP | Gravity.START, 10));
+        showTouchButton = playerShortcut("Controles", "Mostrar controles virtuais", () -> {
+            touchControlsOverride = true;
+            updatePlayerOverlays();
+        });
+        FrameLayout.LayoutParams touchPosition = floating(-2, dp(44), Gravity.TOP | Gravity.START, 10);
+        touchPosition.setMarginStart(dp(60));
+        current.addView(showTouchButton, touchPosition);
 
         metrics = new LinearLayout(this);
         metrics.setOrientation(LinearLayout.VERTICAL);
@@ -2148,8 +2167,6 @@ public final class MainActivity extends Activity {
             metricDetails.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
         current.addView(metrics, floating(dp(282), -2, Gravity.TOP | Gravity.END, 12));
 
-        controls = touchOverlay();
-        current.addView(controls, new FrameLayout.LayoutParams(-1, -1));
         addLaunchPanel(current);
         updatePlayerOverlays();
     }
@@ -2232,6 +2249,16 @@ public final class MainActivity extends Activity {
         return button;
     }
 
+    private TextView playerShortcut(String label, String description, Runnable action) {
+        TextView shortcut = text(label, 12, 0xfff2eaff);
+        shortcut.setGravity(Gravity.CENTER);
+        shortcut.setPadding(dp(10), 0, dp(10), 0);
+        shortcut.setBackground(tapBackground(0xb322192f, 15));
+        shortcut.setContentDescription(description);
+        shortcut.setOnClickListener(view -> action.run());
+        return shortcut;
+    }
+
     private void applyPlayerButtonStyle(Button button, boolean selected) {
         android.graphics.drawable.StateListDrawable states = new android.graphics.drawable.StateListDrawable();
         states.addState(new int[]{android.R.attr.state_focused}, rounded(0xffd8ceff, 10));
@@ -2290,17 +2317,14 @@ public final class MainActivity extends Activity {
             updatePlayerOverlays();
         });
         actions.addView(diagnostics, new LinearLayout.LayoutParams(0, dp(44), 1));
-        if (!gamepadConnected) {
-            Button touch = playerAction(touchAction(), view -> {
-                touchControls = !touchControls;
-                ((Button) view).setText(touchAction());
-                updatePlayerOverlays();
-            });
-            LinearLayout.LayoutParams position = new LinearLayout.LayoutParams(0, dp(44), 1);
-            position.setMarginStart(dp(5));
-            actions.addView(touch, position);
-        }
-
+        Button touch = playerAction(touchAction(), view -> {
+            touchControlsOverride = !touchControlsEnabled();
+            ((Button) view).setText(touchAction());
+            updatePlayerOverlays();
+        });
+        LinearLayout.LayoutParams touchPosition = new LinearLayout.LayoutParams(0, dp(44), 1);
+        touchPosition.setMarginStart(dp(5));
+        actions.addView(touch, touchPosition);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(content);
         AlertDialog dialog = new AlertDialog.Builder(this)
@@ -2333,17 +2357,39 @@ public final class MainActivity extends Activity {
         return showMetrics ? "Ocultar métricas" : "Mostrar métricas";
     }
 
+    private boolean touchControlsEnabled() {
+        return touchControlsOverride == null ? !gamepadConnected : touchControlsOverride;
+    }
+
     private String touchAction() {
-        return touchControls ? "Ocultar controles" : "Mostrar controles";
+        return touchControlsEnabled() ? "Ocultar controles" : "Mostrar controles";
     }
 
     private void updatePlayerOverlays() {
         if (controls == null || player == null) return;
-        boolean showTouch = !launching && !gamepadConnected && touchControls;
+        boolean showTouch = !launching && touchControlsEnabled();
         controls.setVisibility(showTouch ? View.VISIBLE : View.GONE);
         if (!showTouch) resetTouchPad();
-        playerMenuButton.setVisibility(launching || gamepadConnected ? View.GONE : View.VISIBLE);
+        updatePlayerShortcuts();
         metrics.setVisibility(!launching && showMetrics ? View.VISIBLE : View.GONE);
+    }
+
+    private void updatePlayerShortcuts() {
+        if (playerMenuButton == null || player == null) return;
+        boolean visible = !launching && playerShortcutsVisible;
+        playerMenuButton.setVisibility(visible ? View.VISIBLE : View.GONE);
+        showTouchButton.setVisibility(visible && !touchControlsEnabled() ? View.VISIBLE : View.GONE);
+    }
+
+    private void setPlayerShortcuts(boolean visible) {
+        playerShortcutsVisible = visible;
+        updatePlayerShortcuts();
+    }
+
+    private void revealPlayerShortcuts() {
+        ui.removeCallbacks(hidePlayerShortcuts);
+        setPlayerShortcuts(true);
+        ui.postDelayed(hidePlayerShortcuts, 3000);
     }
 
     private static boolean isGamepad(InputDevice device) {
@@ -2355,7 +2401,6 @@ public final class MainActivity extends Activity {
 
     private void refreshGamepads() {
         if (player == null) return;
-        boolean wasConnected = gamepadConnected;
         if (!isGamepad(InputDevice.getDevice(controllerDevice))) {
             if (controllerDevice != -1) resetPad();
             controllerDevice = -1;
@@ -2367,7 +2412,6 @@ public final class MainActivity extends Activity {
             }
         }
         gamepadConnected = controllerDevice != -1;
-        if (!wasConnected && gamepadConnected && playerMenu != null) playerMenu.dismiss();
         updatePlayerOverlays();
     }
 
@@ -2411,11 +2455,37 @@ public final class MainActivity extends Activity {
         }
     }
 
+    @SuppressWarnings("deprecation")
+    private void acquirePlaybackWifiLock() {
+        if (playbackWifiLock != null) return;
+        android.net.wifi.WifiManager wifi = getApplicationContext()
+            .getSystemService(android.net.wifi.WifiManager.class);
+        if (wifi == null) return;
+        int mode = android.os.Build.VERSION.SDK_INT >= 29
+            ? android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            : android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+        android.net.wifi.WifiManager.WifiLock lock = wifi.createWifiLock(mode, "LunaNX:playback");
+        lock.setReferenceCounted(false);
+        try {
+            lock.acquire();
+            playbackWifiLock = lock;
+        } catch (SecurityException error) {
+            android.util.Log.w("LunaNX", "Could not acquire playback Wi-Fi lock", error);
+        }
+    }
+
+    private void releasePlaybackWifiLock() {
+        if (playbackWifiLock == null) return;
+        if (playbackWifiLock.isHeld()) playbackWifiLock.release();
+        playbackWifiLock = null;
+    }
+
     private void startPlayback(long token, Surface target) {
         if (isCancelled(token)) return;
         try {
             boolean preferPortuguese = getPreferences(MODE_PRIVATE).getBoolean("prefer_pt_br", false);
             StreamProfile profile = playerProfile;
+            acquirePlaybackWifiLock();
             nativeStart(selectedGame, target, preferPortuguese, profile.height, profile.fps, profile.bitrateMbps);
             PlaybackReport report = playbackReport;
             playbackTicker = worker.scheduleWithFixedDelay(new Runnable() {
@@ -2439,6 +2509,7 @@ public final class MainActivity extends Activity {
                     String[] status = nativeStatus();
                     if (status == null) return;
                     int phase = Integer.parseInt(status[0]);
+                    if (phase >= ENDED) releasePlaybackWifiLock();
                     long bytes = Long.parseLong(status[2]);
                     long received = Long.parseLong(status[4]);
                     long decoded = Long.parseLong(status[5]);
@@ -2479,6 +2550,7 @@ public final class MainActivity extends Activity {
                             launching = false;
                             launchPanel.setVisibility(View.GONE);
                             updatePlayerOverlays();
+                            revealPlayerShortcuts();
                         }
                         boolean showSurfaceError = phase < ENDED && videoSurfaceError != null;
                         boolean showStatus = phase != STREAMING || showSurfaceError;
@@ -2496,6 +2568,7 @@ public final class MainActivity extends Activity {
                 }
             }, 0, 16, TimeUnit.MILLISECONDS);
         } catch (Exception error) {
+            releasePlaybackWifiLock();
             post(token, () -> showLaunchProgress(ENDED, message(error), false, -1, -1));
         }
     }
@@ -2509,10 +2582,12 @@ public final class MainActivity extends Activity {
         PlaybackReport report = showReport ? playbackReport : null;
         ++operation;
         player = null;
+        ui.removeCallbacks(hidePlayerShortcuts);
         if (playerMenu != null) playerMenu.dismiss();
         playerSurface = null;
         controls = null;
         playerMenuButton = null;
+        showTouchButton = null;
         updateRumble(0);
         controllerDevice = -1;
         gamepadConnected = false;
@@ -2545,7 +2620,11 @@ public final class MainActivity extends Activity {
                         Long.parseLong(status[4]), Long.parseLong(status[5]), status);
                 }
             }
-            nativeStop();
+            try {
+                nativeStop();
+            } finally {
+                releasePlaybackWifiLock();
+            }
             if (report == null) return;
             String summary = report.format(now);
             String[] stats = report.highlights(now);
@@ -2624,81 +2703,127 @@ public final class MainActivity extends Activity {
         showLibraryDialog(dialog, scroll);
     }
 
-    // Classic touch skin geometry adapted from OpenNOW Android (Zortos, MIT).
+    // LandscapeTouchControls and Classic skin ported from OpenNOW Android (Zortos, MIT).
     private View touchOverlay() {
         FrameLayout panel = new FrameLayout(this);
         panel.setMotionEventSplittingEnabled(true);
-        for (boolean left : new boolean[]{true, false}) {
-            LinearLayout side = new LinearLayout(this);
-            side.setOrientation(LinearLayout.VERTICAL);
-            side.setGravity(Gravity.CENTER_HORIZONTAL);
-            side.setMotionEventSplittingEnabled(true);
-            side.addView(left
-                ? padRow(new String[]{"LT", "LB", "L3"}, new int[]{TOUCH_LT, 0x100, 0x40}, true)
-                : padRow(new String[]{"R3", "RB", "RT"}, new int[]{0x80, 0x200, TOUCH_RT}, true));
-            LinearLayout primary = new LinearLayout(this);
-            primary.setGravity(Gravity.CENTER_VERTICAL);
-            primary.setMotionEventSplittingEnabled(true);
-            TouchStick stick = new TouchStick(left);
-            if (left) primary.addView(stick, new LinearLayout.LayoutParams(dp(86), dp(86)));
-            if (left) primary.addView(new TouchDpad(), new LinearLayout.LayoutParams(dp(98), dp(98)));
-            else {
-                LinearLayout face = new LinearLayout(this);
-                face.setOrientation(LinearLayout.VERTICAL);
-                face.setMotionEventSplittingEnabled(true);
-                face.addView(padRow(new String[]{"Y"}, new int[]{0x8000}, false));
-                face.addView(padRow(new String[]{"X", "B"}, new int[]{0x4000, 0x2000}, false));
-                face.addView(padRow(new String[]{"A"}, new int[]{0x1000}, false));
-                primary.addView(face);
-            }
-            if (!left) primary.addView(stick, new LinearLayout.LayoutParams(dp(86), dp(86)));
-            side.addView(primary);
-            panel.addView(side, floating(-2, -2, Gravity.BOTTOM | (left ? Gravity.START : Gravity.END), 10));
-        }
-        panel.addView(padRow(new String[]{"View", "Menu"}, new int[]{0x20, 0x10}, true),
-            floating(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL, 10));
+        Configuration screen = getResources().getConfiguration();
+        float fit = Math.min(1f, Math.min(screen.screenWidthDp / 760f, screen.screenHeightDp / 385f));
+        float scale = 0.9f * fit;
+        float buttons = 1.102468f * scale;
+        float side = 38 * fit;
+        float bottom = 34 * fit;
+        float shoulderWidth = 76 * buttons;
+        float shoulderHeight = 36 * buttons;
+        float shoulderHit = Math.max(48 * fit, shoulderHeight);
+        float clearance = Math.max(34, Math.min(58, (screen.screenHeightDp - 20) * 0.11f));
+        float top = 34 * fit + clearance * Math.max(0.75f, buttons);
+        int topLeft = Gravity.TOP | Gravity.LEFT;
+        int topRight = Gravity.TOP | Gravity.RIGHT;
+        int bottomLeft = Gravity.BOTTOM | Gravity.LEFT;
+        int bottomRight = Gravity.BOTTOM | Gravity.RIGHT;
+        int bottomCenter = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+
+        placeTouch(panel, touchKey("LT", TOUCH_LT, shoulderHeight, shoulderHit),
+            shoulderWidth, shoulderHit, topLeft, side, top);
+        placeTouch(panel, touchKey("LB", 0x0100, shoulderHeight, shoulderHit),
+            shoulderWidth, shoulderHit, topLeft, side, top + shoulderHit + 6 * fit);
+        placeTouch(panel, touchKey("RT", TOUCH_RT, shoulderHeight, shoulderHit),
+            shoulderWidth, shoulderHit, topRight, side, top);
+        placeTouch(panel, touchKey("RB", 0x0200, shoulderHeight, shoulderHit),
+            shoulderWidth, shoulderHit, topRight, side, top + shoulderHit + 6 * fit);
+        addTouchCap(panel, "G", 0x0400, 44 * buttons, fit, Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, top);
+
+        float stick = 112 * scale;
+        float thumb = 54 * buttons;
+        float dpad = 54 * buttons * 0.88f * 3.1f;
+        float leftStick = side + dpad + 14 * fit;
+        placeTouch(panel, new TouchDpad(), dpad, dpad, bottomLeft, side, bottom);
+        placeTouch(panel, new TouchStick(true), stick, stick, bottomLeft, leftStick, bottom);
+        addTouchCap(panel, "LS", 0x0040, thumb, fit, bottomLeft,
+            leftStick + (stick - thumb) / 2, bottom + stick + 6 * fit);
+
+        float face = 54 * buttons * 0.9f;
+        float faceHit = Math.max(48 * fit, face);
+        float distance = faceHit * 1.05f;
+        float faceWidth = faceHit + 2 * distance;
+        float rightStick = side + faceWidth + 14 * fit;
+        placeTouch(panel, new TouchStick(false), stick, stick, bottomRight, rightStick, bottom);
+        addTouchCap(panel, "RS", 0x0080, thumb, fit, bottomRight,
+            rightStick + (stick - thumb) / 2, bottom + stick + 6 * fit);
+        addTouchCap(panel, "A", 0x1000, face, fit, bottomRight, side + distance, bottom);
+        addTouchCap(panel, "B", 0x2000, face, fit, bottomRight, side, bottom + distance);
+        addTouchCap(panel, "X", 0x4000, face, fit, bottomRight, side + 2 * distance, bottom + distance);
+        addTouchCap(panel, "Y", 0x8000, face, fit, bottomRight, side + distance, bottom + 2 * distance);
+
+        float centerSize = 42 * buttons;
+        float centerOffset = centerSize / 2 + 27 * fit;
+        addTouchCap(panel, "◀", 0x0020, centerSize, fit, bottomCenter, -centerOffset, bottom);
+        addTouchCap(panel, "▶", 0x0010, centerSize, fit, bottomCenter, centerOffset, bottom);
         return panel;
     }
 
-    private LinearLayout padRow(String[] labels, int[] masks, boolean shoulder) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER);
-        row.setMotionEventSplittingEnabled(true);
-        for (int i = 0; i < labels.length; i++) {
-            int mask = masks[i];
-            TextView key = text(labels[i], shoulder ? 12 : 16, Color.WHITE);
-            key.setGravity(Gravity.CENTER);
-            android.graphics.drawable.StateListDrawable background = new android.graphics.drawable.StateListDrawable();
-            background.addState(new int[]{android.R.attr.state_pressed}, padShape(0xe56d4ba5));
-            background.addState(new int[]{}, padShape(0x66181724));
-            key.setBackground(background);
-            key.setOnTouchListener((view, event) -> {
-                switch (event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN:
-                        view.setPressed(true);
-                        touchButtons |= mask;
-                        break;
-                    case MotionEvent.ACTION_UP:
-                    case MotionEvent.ACTION_CANCEL:
-                        view.setPressed(false);
-                        touchButtons &= ~mask;
-                        break;
-                    default: return true;
-                }
-                publishPad();
-                return true;
-            });
-            LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(dp(shoulder ? 51 : 42),
-                dp(shoulder ? 35 : 42));
-            layout.setMargins(dp(3), dp(1), dp(3), dp(1));
-            row.addView(key, layout);
-        }
-        return row;
+    private void addTouchCap(FrameLayout panel, String label, int mask, float diameter, float fit,
+                             int anchor, float horizontal, float vertical) {
+        float hit = Math.max(48 * fit, diameter);
+        placeTouch(panel, touchKey(label, mask, diameter, hit), hit, hit, anchor, horizontal, vertical);
     }
 
-    private GradientDrawable padShape(int fill) {
-        GradientDrawable shape = rounded(fill, 30);
-        shape.setStroke(dp(1), 0xcce9ddff);
+    private void placeTouch(FrameLayout panel, View view, float width, float height, int anchor,
+                            float horizontal, float vertical) {
+        FrameLayout.LayoutParams bounds = new FrameLayout.LayoutParams(dp(width), dp(height), anchor);
+        switch (anchor & Gravity.HORIZONTAL_GRAVITY_MASK) {
+            case Gravity.LEFT: bounds.leftMargin = dp(horizontal); break;
+            case Gravity.RIGHT: bounds.rightMargin = dp(horizontal); break;
+            default:
+                // FrameLayout adds leftMargin and subtracts rightMargin for centered children.
+                bounds.leftMargin = Math.max(0, dp(horizontal));
+                bounds.rightMargin = Math.max(0, dp(-horizontal));
+        }
+        if ((anchor & Gravity.VERTICAL_GRAVITY_MASK) == Gravity.TOP)
+            bounds.topMargin = dp(vertical);
+        else
+            bounds.bottomMargin = dp(vertical);
+        panel.addView(view, bounds);
+    }
+
+    private View touchKey(String label, int mask, float size, float hitHeight) {
+        TextView key = text(label, 13, Color.WHITE);
+        key.setGravity(Gravity.CENTER);
+        key.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        key.setTextColor(new ColorStateList(new int[][]{{android.R.attr.state_pressed}, {}},
+            new int[]{0xd1ffffff, 0xbcffffff}));
+        int inset = dp((hitHeight - size) / 2);
+        boolean pill = mask == TOUCH_LT || mask == TOUCH_RT || mask == 0x100 || mask == 0x200;
+        android.graphics.drawable.StateListDrawable states = new android.graphics.drawable.StateListDrawable();
+        states.addState(new int[]{android.R.attr.state_pressed}, new android.graphics.drawable.InsetDrawable(
+            classicPadShape(0x2affffff), pill ? 0 : inset, inset, pill ? 0 : inset, inset));
+        states.addState(new int[]{}, new android.graphics.drawable.InsetDrawable(
+            classicPadShape(0x7d000000), pill ? 0 : inset, inset, pill ? 0 : inset, inset));
+        key.setBackground(states);
+        key.setContentDescription(mask == 0x20 ? "View" : mask == 0x10 ? "Menu" : mask == 0x400 ? "Guide" : label);
+        key.setOnTouchListener((view, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    view.setPressed(true);
+                    touchButtons |= mask;
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    view.setPressed(false);
+                    touchButtons &= ~mask;
+                    break;
+                default: return true;
+            }
+            publishPad();
+            return true;
+        });
+        return key;
+    }
+
+    private GradientDrawable classicPadShape(int fill) {
+        GradientDrawable shape = rounded(fill, 100);
+        shape.setStroke(dp(1), 0x54ffffff);
         return shape;
     }
 
@@ -2718,22 +2843,22 @@ public final class MainActivity extends Activity {
             float inset = dp(1);
             cross.reset();
             cross.addRoundRect((width - arm) / 2, inset, (width + arm) / 2, height - inset,
-                dp(7), dp(7), Path.Direction.CW);
+                dp(8), dp(8), Path.Direction.CW);
             Path horizontal = new Path();
             horizontal.addRoundRect(inset, (height - arm) / 2, width - inset, (height + arm) / 2,
-                dp(7), dp(7), Path.Direction.CW);
+                dp(8), dp(8), Path.Direction.CW);
             cross.op(horizontal, Path.Op.UNION);
         }
 
         @Override protected void onDraw(Canvas canvas) {
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0x66181724);
+            paint.setColor(0x7d000000);
             canvas.drawPath(cross, paint);
             float width = getWidth(), height = getHeight();
             float x = width / 2, y = height / 2;
             canvas.save();
             canvas.clipPath(cross);
-            paint.setColor(0xe56d4ba5);
+            paint.setColor(0x2affffff);
             int[] masks = {1, 8, 2, 4};
             for (int mask : masks) {
                 if ((directions & mask) != 0) {
@@ -2749,7 +2874,7 @@ public final class MainActivity extends Activity {
             canvas.restore();
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(dp(1));
-            paint.setColor(0xcce9ddff);
+            paint.setColor(0x54ffffff);
             canvas.drawPath(cross, paint);
         }
 
@@ -2758,12 +2883,12 @@ public final class MainActivity extends Activity {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                 case MotionEvent.ACTION_MOVE:
-                    float x = (event.getX() - getWidth() / 2f) / getWidth();
-                    float y = (event.getY() - getHeight() / 2f) / getHeight();
-                    if (Math.abs(x) > 0.14f && Math.abs(x) >= 0.52f * Math.abs(y))
-                        next |= x < 0 ? 4 : 8;
-                    if (Math.abs(y) > 0.14f && Math.abs(y) >= 0.52f * Math.abs(x))
-                        next |= y < 0 ? 1 : 2;
+                    float x = event.getX() - getWidth() / 2f;
+                    float y = event.getY() - getHeight() / 2f;
+                    if (Math.hypot(x, y) > dp(12)) {
+                        if (Math.abs(x) > 0.414f * Math.abs(y)) next |= x < 0 ? 4 : 8;
+                        if (Math.abs(y) > 0.414f * Math.abs(x)) next |= y < 0 ? 1 : 2;
+                    }
                     break;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
@@ -2792,21 +2917,20 @@ public final class MainActivity extends Activity {
             float cx = getWidth() / 2f, cy = getHeight() / 2f;
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(dp(1));
-            paint.setColor(0xcce9ddff);
-            canvas.drawCircle(cx, cy, Math.min(cx, cy) - dp(2), paint);
+            paint.setColor(0x3fffffff);
+            float size = Math.min(getWidth(), getHeight());
+            canvas.drawCircle(cx, cy, size / 2 - dp(1), paint);
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(0x995f458a);
-            canvas.drawCircle(cx + x * dp(24), cy - y * dp(24), dp(17), paint);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setColor(0xcce9ddff);
-            canvas.drawCircle(cx + x * dp(24), cy - y * dp(24), dp(17), paint);
+            paint.setColor(0xa7cccccc);
+            canvas.drawCircle(cx + x * size * 0.34f, cy - y * size * 0.34f, size * 0.22f, paint);
         }
         @Override public boolean onTouchEvent(MotionEvent event) {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                 case MotionEvent.ACTION_MOVE:
-                    float rawX = (event.getX() - getWidth() / 2f) / dp(28);
-                    float rawY = (getHeight() / 2f - event.getY()) / dp(28);
+                    float radius = Math.min(getWidth(), getHeight()) * 0.34f;
+                    float rawX = (event.getX() - getWidth() / 2f) / radius;
+                    float rawY = (getHeight() / 2f - event.getY()) / radius;
                     float scale = Math.max(1f, (float) Math.hypot(rawX, rawY));
                     x = rawX / scale;
                     y = rawY / scale;
@@ -2817,8 +2941,10 @@ public final class MainActivity extends Activity {
                     break;
                 default: return true;
             }
-            if (left) { touchLx = x; touchLy = y; }
-            else { touchRx = x; touchRy = y; }
+            float length = (float) Math.hypot(x, y);
+            float output = length > 0.05f ? (length - 0.05f) / (0.95f * length) : 0;
+            if (left) { touchLx = x * output; touchLy = y * output; }
+            else { touchRx = x * output; touchRy = y * output; }
             publishPad();
             invalidate();
             return true;

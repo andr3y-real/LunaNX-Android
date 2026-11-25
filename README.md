@@ -1,6 +1,6 @@
 # LunaNX Android
 
-LunaNX Android is an experimental, community-maintained client for Amazon Luna. It brings the original Nintendo Switch project to Android with a searchable game library, fullscreen streaming, Bluetooth and USB gamepad support, and on-screen controls.
+LunaNX Android is an experimental, community-maintained client for Amazon Luna. It brings the original Nintendo Switch project to Android with a searchable game library, fullscreen streaming on the device, Bluetooth and USB gamepad support, and on-screen controls.
 
 <table>
   <tr>
@@ -41,13 +41,17 @@ Choose **Criar perfil** (Create profile) to save a named configuration. Custom p
 
 ## Player controls and diagnostics
 
-Double-tap the video or press **Start + Select** on a gamepad to open the player menu. Use it to fit the entire image, fill the screen with cropping, or stretch the image. On-screen controls hide when a physical controller connects.
+Double-tap the video or press **Start + Select** on a gamepad to open the player menu. Use it to fit the entire image, fill the screen with cropping, or stretch the image. By default, on-screen controls appear when no physical gamepad is connected. Tap an open area of the video to reveal the player shortcuts, including **Controles** (Controls) when the virtual pad is hidden. The shortcuts hide again after three seconds. The player menu also lets you toggle the virtual pad.
 
 **Mostrar métricas** (Show metrics) displays decoded FPS, bitrate, and RTP jitter during play. Tap the overlay for queue, codec, and recovery counters.
 
+During a session, the app requests a low-latency Wi-Fi lock on Android 10 and later, or a high-performance lock on Android 9. The lock is released when playback ends or fails. Low-latency mode requires the app to be in the foreground with the screen on. Its effect depends on the device and network.
+
 When you leave a game, the session report shows the requested profile, session time, average decoded FPS and bitrate, the share of decoded frames scheduled for the screen, and intervals without decoded video. **Detalhes técnicos** expands the full counters and recent events. **Copiar relatório** copies the full text.
 
-For a playback issue, share the report with your app version, device model, connection type, and what you saw during play. Mention screen mirroring if you used it. Review the report before sharing and keep Amazon credentials, sign-in codes, and signing keys private.
+The technical report includes received and decoded frame counts, frames scheduled for display, damaged RTP units, recovered and expired packet gaps, frames discarded while waiting for a keyframe, and decoder resets. The codec delay counter measures input-to-output time inside the local decoding path.
+
+For a playback issue, share the report with your app version, device model, connection type, and what you saw during play. Review the report before sharing and keep Amazon credentials, sign-in codes, and signing keys private.
 
 ## Build and install
 
