@@ -10,6 +10,9 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.content.res.ColorStateList;
@@ -34,15 +37,16 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
-import android.view.inputmethod.InputMethodManager;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.GridView;
+import android.widget.HorizontalScrollView;
 import android.widget.Gallery;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -72,13 +76,14 @@ public final class MainActivity extends Activity {
     private static final int ACCENT = 0xffae9aff;
     private static final int MUTED = 0xffbac0d4;
     // Row layout from game_rows in the JNI bridge.
-    private static final int GAME_FIELDS = 7;
+    private static final int GAME_FIELDS = 8;
     private static final int COVER = 1;
     private static final int OFFER = 2;
     private static final int BACKDROP = 3;
     private static final int PREMIUM = 4;
     private static final int GAME_KEY = 5;
     private static final int DETAILS = 6;
+    private static final int GENRES = 7;
     private static final int ALL_GAMES = 0;
     private static final int TOP_GAMES = 1;
     private static final int RECENT_GAMES = 2;
@@ -96,16 +101,6 @@ public final class MainActivity extends Activity {
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private ConnectivityManager connectivity;
-    private boolean monitoringConnection;
-    private final ConnectivityManager.NetworkCallback connectionListener =
-        new ConnectivityManager.NetworkCallback() {
-            @Override public void onCapabilitiesChanged(Network network, NetworkCapabilities capabilities) {
-                if (libraryVisible) updateLibraryConnection();
-            }
-            @Override public void onLost(Network network) {
-                if (libraryVisible) updateLibraryConnection();
-            }
-        };
     private volatile long operation;
     private volatile boolean destroyed;
     private boolean authenticating;
@@ -116,12 +111,20 @@ public final class MainActivity extends Activity {
     private ImageView libraryBackdrop;
     private TextView selectedTitle;
     private TextView selectedDetails;
-    private TextView connectionStatus;
     private int libraryDirection;
     private Button playSelection;
     private int selection;
     private boolean listLayout;
     private boolean libraryVisible;
+    private boolean home;
+    private String homeGenre = "";
+    private int featuredPosition;
+    private int homeScrollPosition;
+    private String[][] homeRows;
+    private ScrollView homeScroll;
+    private static final int LIBRARY_BACKGROUND = 0xff121317;
+    private static final int LIBRARY_CARD = 0xff232429;
+    private static final int LIBRARY_SELECTED = 0xffc7c8d0;
     private String[] libraryInfo = {"", "", "", "", "", "0"};
     private volatile long catalogGeneration;
     private volatile boolean catalogPaused;
@@ -388,101 +391,601 @@ public final class MainActivity extends Activity {
         });
     }
 
-    // Reads the initial section on the same worker that owns the native launch indices.
     private void openLibrary(long token) {
         String[] info = nativeLibraryInfo();
-        int initialSection = RECENT_GAMES;
-        String[] initial = nativeSection(initialSection);
-        if (initial.length == 0) initial = nativeSection(initialSection = TOP_GAMES);
-        if (initial.length == 0) initial = nativeSection(initialSection = ALL_GAMES);
-        final int openedSection = initialSection;
-        final String[] rows = initial;
+        String[][] rows = readHomeRows();
         post(token, () -> {
             authenticating = false;
             libraryInfo = info;
-            section = openedSection;
-            search = "";
-            selection = 0;
-            showLibrary(rows);
+            homeGenre = "";
+            homeScrollPosition = 0;
+            featuredPosition = 0;
+            showHome(rows);
             startCatalogDiscovery(false);
         });
     }
 
-    private void showLibrary(String[] library) {
-        games = library;
+    // Read Todos last so the native result table matches the default library section.
+    private String[][] readHomeRows() {
+        String[] top = nativeSection(TOP_GAMES);
+        String[] recent = nativeSection(RECENT_GAMES);
+        return new String[][]{nativeSection(ALL_GAMES), top, recent};
+    }
+
+    private void openHome() {
+        if (loadingGames) return;
+        loadingGames = true;
+        long token = ++operation;
+        worker.execute(() -> {
+            try {
+                String[][] rows = readHomeRows();
+                post(token, () -> {
+                    homeGenre = "";
+                    homeScrollPosition = 0;
+                    showHome(rows);
+                });
+            } catch (Exception error) {
+                post(token, () -> {
+                    loadingGames = false;
+                    libraryStatus.setText(message(error));
+                });
+            }
+        });
+    }
+
+    private void showHome(String[][] rows) {
+        showHome(rows, false);
+    }
+
+    private void showHome(String[][] rows, boolean preserveScroll) {
+        if (preserveScroll && homeScroll != null) homeScrollPosition = homeScroll.getScrollY();
+        home = true;
+        playSelection = null;
+        carousel = null;
+        grid = null;
+        libraryBackdrop = null;
+        homeRows = rows;
+        games = rows[ALL_GAMES];
+        section = ALL_GAMES;
+        search = "";
+        selection = 0;
         loadingGames = false;
         libraryVisible = true;
         listLayout = getPreferences(MODE_PRIVATE).getBoolean("library_list", false);
-        LinearLayout content = screenContent();
-        FrameLayout background = new FrameLayout(this);
-        setContentView(background, new ViewGroup.LayoutParams(-1, -1));
-        libraryBackdrop = new ImageView(this);
-        libraryBackdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        background.addView(libraryBackdrop, new FrameLayout.LayoutParams(-1, -1));
-        content.setBackgroundColor(0xe010121c);
-        background.addView(content, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout page = libraryPage(-1);
+        homeScroll = null;
+        libraryStatus = text("", 11, MUTED);
+        page.addView(libraryStatus);
+        if (homeGenre.isEmpty()) {
+            homeScroll = new ScrollView(this);
+            homeScroll.setVerticalScrollBarEnabled(false);
+            page.addView(homeScroll, new LinearLayout.LayoutParams(-1, 0, 1));
+            LinearLayout body = new LinearLayout(this);
+            body.setOrientation(LinearLayout.VERTICAL);
+            body.setPadding(0, dp(4), 0, dp(12));
+            homeScroll.addView(body, new ScrollView.LayoutParams(-1, -2));
+            sectionHeading(body, "Top 10", "", () -> loadSection(TOP_GAMES));
+            FrameLayout featured = new FrameLayout(this);
+            addHomeRail(body, rows[TOP_GAMES], TOP_GAMES, 10, false, position -> {
+                featuredPosition = position;
+                showFeatured(featured);
+            });
+            LinearLayout.LayoutParams featureSize = new LinearLayout.LayoutParams(-1, dp(82));
+            featureSize.topMargin = dp(8);
+            body.addView(featured, featureSize);
+            showFeatured(featured);
 
+            sectionHeading(body, "Continuar a jogar", "", () -> loadSection(RECENT_GAMES));
+            addRecentRail(body, rows[RECENT_GAMES]);
+
+            sectionHeading(body, "A tua biblioteca", gameCount(games), () -> loadSection(ALL_GAMES));
+            addHomeRail(body, games, ALL_GAMES, 12, true,
+                position -> launchFromHome(ALL_GAMES, games[position * GAME_FIELDS + GAME_KEY]));
+            sectionHeading(body, "Categorias", "", null);
+            addCategories(body);
+        } else {
+            addGenreList(page);
+        }
+        addBottomBar(page, true);
+        ScrollView scroll = homeScroll;
+        if (scroll != null) scroll.post(() -> scroll.scrollTo(0, homeScrollPosition));
+    }
+
+    private void addGenreList(LinearLayout page) {
+        sectionHeading(page, homeGenre, "", null);
+        String[] filtered = gamesInGenre(homeGenre);
+        ListView list = new ListView(this);
+        list.setDividerHeight(dp(4));
+        list.setAdapter(new GameAdapter(filtered, true));
+        list.setOnItemClickListener((parent, view, position, id) ->
+            launchFromHome(ALL_GAMES, filtered[position * GAME_FIELDS + GAME_KEY]));
+        if (filtered.length == 0) libraryStatus.setText("Nenhum jogo nesta categoria");
+        page.addView(list, new LinearLayout.LayoutParams(-1, 0, 1));
+    }
+
+    private String gameCount(String[] rows) {
+        int count = rows.length / GAME_FIELDS;
+        return count + (count == 1 ? " jogo" : " jogos");
+    }
+
+    private LinearLayout libraryPage(int active) {
+        LinearLayout page = screenContent();
+        page.setBackgroundColor(LIBRARY_BACKGROUND);
+        getWindow().setStatusBarColor(LIBRARY_BACKGROUND);
+        getWindow().setNavigationBarColor(LIBRARY_BACKGROUND);
+        page.setPadding(dp(12), dp(3), dp(12), dp(8));
+        setContentView(page);
         LinearLayout header = new LinearLayout(this);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout identity = new LinearLayout(this);
-        identity.setOrientation(LinearLayout.VERTICAL);
-        identity.addView(heading("LunaNX"));
-        connectionStatus = text("", 12, MUTED);
-        identity.addView(connectionStatus);
-        updateLibraryConnection();
-        header.addView(identity, new LinearLayout.LayoutParams(0, -2, 1));
-        if (!libraryInfo[1].isEmpty()) {
-            ImageView avatar = new ImageView(this);
-            avatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            avatar.setBackground(rounded(CARD, 20));
-            avatar.setClipToOutline(true);
-            avatar.setContentDescription("Avatar do perfil Luna");
+        TextView title = heading("LunaNX");
+        title.setTextSize(22);
+        header.addView(title, new LinearLayout.LayoutParams(0, -1, 1));
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setOnLongClickListener(v -> { showLibraryMenu(); return true; });
+        View searchIcon = icon("search", "Buscar", this::showLibrarySearch);
+        header.addView(searchIcon, new LinearLayout.LayoutParams(dp(36), dp(36)));
+        View account;
+        if (libraryInfo[1].isEmpty()) {
+            account = icon("account", "Conta", this::showAccount);
+        } else {
+            ImageView avatar = coverView(libraryInfo[1], 18);
+            avatar.setContentDescription("Conta");
+            avatar.setFocusable(true);
             avatar.setOnClickListener(v -> showAccount());
-            header.addView(avatar, new LinearLayout.LayoutParams(dp(38), dp(38)));
-            bindCover(avatar, libraryInfo[1]);
+            account = avatar;
         }
-        Button account = button("Conta", this::showAccount);
-        if (!libraryInfo[0].isEmpty()) account.setContentDescription("Conta de " + libraryInfo[0]);
-        header.addView(account);
-        header.addView(button("Menu", this::showLibraryMenu));
-        content.addView(header);
+        LinearLayout.LayoutParams accountSize = new LinearLayout.LayoutParams(dp(36), dp(36));
+        accountSize.leftMargin = dp(6);
+        header.addView(account, accountSize);
+        page.addView(header, new LinearLayout.LayoutParams(-1, dp(47)));
 
-        LinearLayout searchRow = new LinearLayout(this);
-        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout tabs = new LinearLayout(this);
+        String[] labels = {"Início", "Biblioteca", "Top 10", "Continuar"};
+        String[] icons = {"home", "grid", "trophy", "play"};
+        int[] destinations = {-1, ALL_GAMES, TOP_GAMES, RECENT_GAMES};
+        for (int i = 0; i < labels.length; ++i) {
+            int target = destinations[i];
+            Runnable action = target == -1 ? this::openHome : () -> loadSection(target);
+            View tab = navButton(icons[i], labels[i], active == target, action);
+            LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(0, dp(43), 1);
+            if (i > 0) size.leftMargin = dp(5);
+            tabs.addView(tab, size);
+        }
+        page.addView(tabs, new LinearLayout.LayoutParams(-1, dp(46)));
+        return page;
+    }
+
+    private void showLibrarySearch() {
+        if (loadingGames) return;
         EditText query = new EditText(this);
         query.setSingleLine(true);
         query.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
         query.setHint("Buscar jogos");
         query.setText(search);
-        Runnable submit = () -> {
-            ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
-                .hideSoftInputFromWindow(query.getWindowToken(), 0);
-            query.clearFocus();
-            String submitted = query.getText().toString().trim();
-            if (submitted.isEmpty()) loadSection(ALL_GAMES);
-            else loadGames(submitted);
-        };
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Buscar jogos")
+            .setView(query).setNegativeButton("Cancelar", null)
+            .setPositiveButton("Buscar", (view, which) -> submitLibrarySearch(query)).create();
         query.setOnEditorActionListener((view, action, event) -> {
             if (action != EditorInfo.IME_ACTION_SEARCH) return false;
-            submit.run();
+            dialog.dismiss();
+            submitLibrarySearch(query);
             return true;
         });
-        searchRow.addView(query, new LinearLayout.LayoutParams(0, dp(48), 1));
-        searchRow.addView(button("Buscar", submit));
-        content.addView(searchRow);
+        query.requestFocus();
+        dialog.show();
+        if (dialog.getWindow() != null)
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+    }
 
-        LinearLayout sections = new LinearLayout(this);
-        for (int i = 0; i < SECTIONS.length; ++i) {
-            final int destination = i;
-            Button tab = button(SECTIONS[i], () -> loadSection(destination));
-            tab.setTextSize(12);
-            tab.setPadding(0, 0, 0, 0);
-            if (search.isEmpty() && i == section) tab.setTextColor(ACCENT);
-            sections.addView(tab, new LinearLayout.LayoutParams(0, -2, 1));
+    private void submitLibrarySearch(EditText query) {
+        String term = query.getText().toString().trim();
+        if (term.isEmpty()) loadSection(ALL_GAMES);
+        else loadGames(term);
+    }
+
+    private void addBottomBar(LinearLayout page, boolean atHome) {
+        LinearLayout bottom = new LinearLayout(this);
+        bottom.setBackground(rounded(LIBRARY_CARD, 12));
+        bottom.addView(navButton("home", "Início", false, this::openHome),
+            new LinearLayout.LayoutParams(0, -1, 1));
+        bottom.addView(navButton("grid", "Biblioteca", false, () -> loadSection(ALL_GAMES)),
+            new LinearLayout.LayoutParams(0, -1, 1));
+        bottom.getChildAt(atHome ? 0 : 1).setSelected(true);
+        bottom.getChildAt(atHome ? 1 : 0).setAlpha(0.72f);
+        page.addView(bottom, new LinearLayout.LayoutParams(-1, dp(48)));
+    }
+
+    private View navButton(String symbol, String label, boolean selected, Runnable action) {
+        LinearLayout tile = new LinearLayout(this);
+        tile.setOrientation(LinearLayout.VERTICAL);
+        tile.setGravity(Gravity.CENTER);
+        tile.setBackground(rounded(selected ? LIBRARY_SELECTED : LIBRARY_CARD, 9));
+        int color = selected ? LIBRARY_BACKGROUND : Color.WHITE;
+        tile.addView(new LibraryIcon(symbol, color), new LinearLayout.LayoutParams(dp(17), dp(17)));
+        TextView caption = text(label, 10, color);
+        caption.setGravity(Gravity.CENTER);
+        tile.addView(caption);
+        tile.setContentDescription(label);
+        tile.setSelected(selected);
+        tile.setFocusable(true);
+        tile.setOnClickListener(v -> action.run());
+        return tile;
+    }
+
+    private View icon(String name, String label, Runnable action) {
+        FrameLayout view = new FrameLayout(this);
+        view.setBackground(rounded(LIBRARY_CARD, 20));
+        view.addView(new LibraryIcon(name, Color.WHITE),
+            new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
+        view.setContentDescription(label);
+        view.setFocusable(true);
+        view.setOnClickListener(v -> action.run());
+        return view;
+    }
+
+    private final class LibraryIcon extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path path = new Path();
+        private final String name;
+
+        LibraryIcon(String name, int color) {
+            super(MainActivity.this);
+            this.name = name;
+            paint.setColor(color);
+            paint.setStrokeWidth(1.7f);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            paint.setStyle(Paint.Style.STROKE);
+            setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         }
-        content.addView(sections);
+
+        @Override protected void onDraw(Canvas canvas) {
+            canvas.save();
+            canvas.scale(getWidth() / 24f, getHeight() / 24f);
+            switch (name) {
+                case "home":
+                    drawPath(canvas, 3, 11, 12, 3, 21, 11, 19, 11, 19, 21, 14, 21,
+                        14, 15, 10, 15, 10, 21, 5, 21, 5, 11, 3, 11);
+                    break;
+                case "grid":
+                    for (int y = 4; y <= 13; y += 9)
+                        for (int x = 4; x <= 13; x += 9)
+                            canvas.drawRoundRect(x, y, x + 7, y + 7, 1.5f, 1.5f, paint);
+                    break;
+                case "trophy":
+                    drawPath(canvas, 7, 4, 17, 4, 17, 11, 15, 14, 9, 14, 7, 11, 7, 4);
+                    drawPath(canvas, 7, 6, 3, 6, 3, 9, 5, 11, 7, 11);
+                    drawPath(canvas, 17, 6, 21, 6, 21, 9, 19, 11, 17, 11);
+                    drawPath(canvas, 12, 14, 12, 20);
+                    drawPath(canvas, 7, 20, 17, 20);
+                    break;
+                case "play": drawPath(canvas, 7, 4, 20, 12, 7, 20, 7, 4); break;
+                case "action":
+                    drawPath(canvas, 7, 7, 17, 7, 20, 10, 22, 17, 19, 19, 15, 15,
+                        9, 15, 5, 19, 2, 17, 4, 10, 7, 7);
+                    drawPath(canvas, 6, 11, 10, 11);
+                    drawPath(canvas, 8, 9, 8, 13);
+                    canvas.drawPoint(16, 10, paint);
+                    canvas.drawPoint(18, 12, paint);
+                    break;
+                case "adventure":
+                    canvas.drawCircle(12, 12, 9, paint);
+                    drawPath(canvas, 8, 16, 10, 10, 16, 8, 14, 14, 8, 16);
+                    break;
+                case "simulation":
+                    canvas.drawCircle(9, 7, 3, paint);
+                    canvas.drawCircle(17, 9, 2.5f, paint);
+                    canvas.drawArc(2, 13, 16, 23, 180, 180, false, paint);
+                    canvas.drawArc(14, 13, 23, 23, 215, 145, false, paint);
+                    break;
+                case "indie":
+                    drawPath(canvas, 3, 9, 12, 4, 21, 9, 12, 14, 3, 9);
+                    drawPath(canvas, 3, 13, 12, 18, 21, 13);
+                    drawPath(canvas, 3, 17, 12, 22, 21, 17);
+                    break;
+                case "search":
+                    canvas.drawCircle(10, 10, 6, paint);
+                    drawPath(canvas, 15, 15, 21, 21);
+                    break;
+                default:
+                    canvas.drawCircle(12, 8, 3.5f, paint);
+                    canvas.drawArc(4, 13, 20, 25, 180, 180, false, paint);
+                    break;
+            }
+            canvas.restore();
+        }
+
+        private void drawPath(Canvas canvas, float... points) {
+            path.rewind();
+            path.moveTo(points[0], points[1]);
+            for (int i = 2; i < points.length; i += 2) path.lineTo(points[i], points[i + 1]);
+            canvas.drawPath(path, paint);
+        }
+    }
+
+    private void sectionHeading(LinearLayout body, String title, String detail, Runnable action) {
+        LinearLayout line = new LinearLayout(this);
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        TextView label = text(title, 14, Color.WHITE);
+        label.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        line.addView(label);
+        TextView description = text(detail, 10, MUTED);
+        description.setPadding(dp(8), 0, 0, 0);
+        line.addView(description, new LinearLayout.LayoutParams(0, -2, 1));
+        if (action != null) {
+            TextView more = text("Ver todos  ›", 10, Color.WHITE);
+            more.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+            more.setPadding(dp(12), 0, dp(2), 0);
+            more.setFocusable(true);
+            more.setOnClickListener(v -> action.run());
+            line.addView(more, new LinearLayout.LayoutParams(-2, -1));
+        }
+        LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(-1, dp(29));
+        size.topMargin = dp(4);
+        body.addView(line, size);
+    }
+
+    private LinearLayout rail(LinearLayout body, int height) {
+        HorizontalScrollView scroll = new HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout items = new LinearLayout(this);
+        scroll.addView(items, new HorizontalScrollView.LayoutParams(-2, -1));
+        body.addView(scroll, new LinearLayout.LayoutParams(-1, dp(height)));
+        return items;
+    }
+
+    private ImageView coverView(String url, int radius) {
+        ImageView image = new ImageView(this);
+        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        image.setBackground(rounded(LIBRARY_CARD, radius));
+        image.setClipToOutline(true);
+        bindCover(image, url);
+        return image;
+    }
+
+    private void addHomeRail(LinearLayout body, String[] rows, int source, int limit, boolean captions,
+                             java.util.function.IntConsumer choose) {
+        int count = Math.min(limit, rows.length / GAME_FIELDS);
+        if (count == 0) {
+            body.addView(text(source == TOP_GAMES ? "O ranking não está disponível" :
+                "Nenhum jogo encontrado", 12, MUTED));
+            return;
+        }
+        int width = Math.max(64, Math.min(90,
+            Math.round((getResources().getConfiguration().screenWidthDp - 24) / 4.65f) - 7));
+        int coverHeight = Math.round(width * (captions ? 0.92f : 1.34f));
+        LinearLayout items = rail(body, coverHeight + (captions ? 34 : 0));
+        for (int i = 0; i < count; ++i) {
+            int offset = i * GAME_FIELDS;
+            int position = i;
+            LinearLayout tile = new LinearLayout(this);
+            tile.setOrientation(LinearLayout.VERTICAL);
+            tile.setBackground(rounded(LIBRARY_CARD, 8));
+            tile.setClipToOutline(true);
+            ImageView cover = coverView(rows[offset + COVER], 8);
+            tile.addView(cover, new LinearLayout.LayoutParams(-1, dp(coverHeight)));
+            if (captions) {
+                TextView title = text(rows[offset], 10, Color.WHITE);
+                title.setMaxLines(2);
+                title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                title.setPadding(dp(6), dp(3), dp(4), 0);
+                tile.addView(title);
+            }
+            tile.setContentDescription(rows[offset]);
+            tile.setFocusable(true);
+            tile.setOnClickListener(v -> choose.accept(position));
+            LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(dp(width), -1);
+            size.rightMargin = dp(7);
+            items.addView(tile, size);
+        }
+    }
+
+    private void showFeatured(FrameLayout frame) {
+        frame.removeAllViews();
+        String[] preferred = homeRows[TOP_GAMES];
+        int source = preferred.length == 0 ? ALL_GAMES : TOP_GAMES;
+        String[] rows = homeRows[source];
+        frame.setVisibility(rows.length == 0 ? View.GONE : View.VISIBLE);
+        if (rows.length == 0) return;
+        int offset = Math.min(featuredPosition, rows.length / GAME_FIELDS - 1) * GAME_FIELDS;
+        frame.setBackground(rounded(LIBRARY_CARD, 11));
+        frame.setClipToOutline(true);
+        ImageView background = coverView(rows[offset + BACKDROP], 11);
+        background.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        frame.addView(background, new FrameLayout.LayoutParams(-1, -1));
+        View shade = new View(this);
+        shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+            new int[]{0xff232429, 0xed232429, 0x34232429}));
+        frame.addView(shade, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout detail = new LinearLayout(this);
+        detail.setOrientation(LinearLayout.VERTICAL);
+        detail.setPadding(dp(12), dp(7), dp(10), dp(6));
+        TextView title = text(rows[offset], 15, Color.WHITE);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setSingleLine();
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        detail.addView(title);
+        TextView description = text(rows[offset + DETAILS], 10, MUTED);
+        description.setSingleLine();
+        description.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        detail.addView(description, new LinearLayout.LayoutParams(-1, dp(20)));
+        TextView play = text("▶  Jogar", 11, LIBRARY_BACKGROUND);
+        play.setGravity(Gravity.CENTER);
+        play.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        play.setBackground(rounded(LIBRARY_SELECTED, 15));
+        play.setFocusable(true);
+        String key = rows[offset + GAME_KEY];
+        play.setOnClickListener(v -> launchFromHome(source, key));
+        detail.addView(play, new LinearLayout.LayoutParams(dp(88), dp(27)));
+        frame.addView(detail, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private void addRecentRail(LinearLayout body, String[] rows) {
+        if (rows.length == 0) {
+            body.addView(text("Os jogos que você abrir aparecem aqui", 12, MUTED));
+            return;
+        }
+        LinearLayout items = rail(body, 48);
+        int width = Math.max(144, (int) (getResources().getDisplayMetrics().widthPixels /
+            getResources().getDisplayMetrics().density - 32) / 2);
+        for (int i = 0; i < Math.min(rows.length, 5 * GAME_FIELDS); i += GAME_FIELDS) {
+            String key = rows[i + GAME_KEY];
+            View card = recentCard(rows, i, () -> launchFromHome(RECENT_GAMES, key));
+            LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(dp(width), -1);
+            size.rightMargin = dp(7);
+            items.addView(card, size);
+        }
+    }
+
+    private View recentCard(String[] rows, int offset, Runnable launch) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(5), 0, dp(6), 0);
+        row.setBackground(rounded(LIBRARY_CARD, 8));
+        ImageView cover = coverView(rows[offset + COVER], 5);
+        row.addView(cover, new LinearLayout.LayoutParams(dp(40), dp(39)));
+        TextView title = text(rows[offset], 11, Color.WHITE);
+        title.setMaxLines(2);
+        title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        title.setPadding(dp(7), 0, dp(4), 0);
+        row.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView play = text("▶", 12, Color.WHITE);
+        play.setGravity(Gravity.CENTER);
+        play.setBackground(rounded(0xff383941, 15));
+        row.addView(play, new LinearLayout.LayoutParams(dp(29), dp(29)));
+        row.setFocusable(true);
+        row.setContentDescription("Jogar " + rows[offset]);
+        row.setOnClickListener(v -> launch.run());
+        return row;
+    }
+
+    private void addCategories(LinearLayout body) {
+        LinearLayout items = rail(body, 32);
+        String[] names = {"Ação", "Aventura", "Simulação", "Indie", "Mais"};
+        String[] symbols = {"action", "adventure", "simulation", "indie", "grid"};
+        for (int i = 0; i < names.length; ++i) {
+            String name = names[i];
+            LinearLayout chip = new LinearLayout(this);
+            chip.setGravity(Gravity.CENTER);
+            chip.setPadding(dp(9), 0, dp(9), 0);
+            chip.addView(new LibraryIcon(symbols[i], Color.WHITE),
+                new LinearLayout.LayoutParams(dp(14), dp(14)));
+            TextView label = text(name, 10, Color.WHITE);
+            label.setPadding(dp(5), 0, 0, 0);
+            chip.addView(label);
+            chip.setContentDescription(name);
+            chip.setBackground(rounded(LIBRARY_CARD, 8));
+            chip.setFocusable(true);
+            chip.setOnClickListener(v -> {
+                if (name.equals("Mais")) showCategories();
+                else openCategory(name);
+            });
+            LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(-2, dp(30));
+            size.rightMargin = dp(6);
+            items.addView(chip, size);
+        }
+    }
+
+    private void showCategories() {
+        if (loadingGames) return;
+        java.util.Set<String> genres = new java.util.TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        for (int offset = GENRES; offset < games.length; offset += GAME_FIELDS)
+            for (String genre : games[offset].split("\u001f"))
+                if (!genre.isEmpty()) genres.add(genreLabel(genre));
+        String[] options = genres.toArray(new String[0]);
+        new AlertDialog.Builder(this).setTitle("Categorias")
+            .setItems(options, (dialog, which) -> openCategory(options[which]))
+            .setNeutralButton("Luna Premium", (dialog, which) -> loadSection(PREMIUM_GAMES))
+            .setNegativeButton("Fechar", null).show();
+    }
+
+    private void openCategory(String genre) {
+        if (loadingGames) return;
+        homeGenre = genre;
+        homeScrollPosition = 0;
+        showHome(homeRows);
+    }
+
+    private String[] gamesInGenre(String genre) {
+        java.util.List<String> filtered = new java.util.ArrayList<>();
+        for (int offset = 0; offset < games.length; offset += GAME_FIELDS) {
+            for (String tag : games[offset + GENRES].split("\u001f")) {
+                if (genreLabel(tag).equalsIgnoreCase(genre)) {
+                    for (int i = 0; i < GAME_FIELDS; ++i) filtered.add(games[offset + i]);
+                    break;
+                }
+            }
+        }
+        return filtered.toArray(new String[0]);
+    }
+
+    private static String genreLabel(String genre) {
+        String name = java.text.Normalizer.normalize(genre.trim(), java.text.Normalizer.Form.NFD)
+            .replaceAll("\\p{M}", "").toLowerCase(java.util.Locale.ROOT);
+        switch (name) {
+            case "action": case "acao": case "accion": case "azione": return "Ação";
+            case "adventure": case "aventura": case "aventure": case "avventura": return "Aventura";
+            case "simulation": case "simulator": case "simulacao": case "simulacion": return "Simulação";
+            case "indie": return "Indie";
+            default: return genre;
+        }
+    }
+
+    private void launchFromHome(int source, String key) {
+        if (loadingGames) return;
+        String[] snapshot = homeRows[source];
+        for (int i = 0; i < snapshot.length; i += GAME_FIELDS) {
+            if (!key.equals(snapshot[i + GAME_KEY])) continue;
+            if (!snapshot[i + PREMIUM].isEmpty() && !libraryInfo[3].isEmpty()) {
+                String title = snapshot[i];
+                new AlertDialog.Builder(this).setTitle("Este jogo requer Luna Premium")
+                    .setMessage("A Amazon pode pedir uma assinatura Luna Premium para abrir " + title + ".")
+                    .setPositiveButton("Tentar jogar", (dialog, which) -> resolveHomeLaunch(source, key))
+                    .setNegativeButton("Voltar", null).show();
+                return;
+            }
+            break;
+        }
+        resolveHomeLaunch(source, key);
+    }
+
+    private void resolveHomeLaunch(int source, String key) {
+        if (loadingGames || !home || !libraryVisible) return;
+        loadingGames = true;
+        long token = ++operation;
+        if (homeScroll != null) homeScrollPosition = homeScroll.getScrollY();
+        worker.execute(() -> {
+            try {
+                String[] rows = nativeSection(source);
+                post(token, () -> {
+                    loadingGames = false;
+                    for (int offset = 0; offset < rows.length; offset += GAME_FIELDS) {
+                        if (!key.equals(rows[offset + GAME_KEY])) continue;
+                        games = rows;
+                        showPlayer(offset / GAME_FIELDS);
+                        return;
+                    }
+                    libraryStatus.setText("Este jogo não está mais disponível.");
+                });
+            } catch (Exception error) {
+                post(token, () -> {
+                    loadingGames = false;
+                    libraryStatus.setText(message(error));
+                });
+            }
+        });
+    }
+
+    private void showLibrary(String[] library) {
+        home = false;
+        games = library;
+        loadingGames = false;
+        libraryVisible = true;
+        listLayout = getPreferences(MODE_PRIVATE).getBoolean("library_list", false);
+        LinearLayout content = libraryPage(search.isEmpty() ? section : -2);
 
         libraryStatus = text("", 14, MUTED);
+        libraryStatus.setPadding(dp(3), dp(8), dp(3), dp(8));
         content.addView(libraryStatus);
         if (listLayout) {
             carousel = null;
@@ -512,7 +1015,18 @@ public final class MainActivity extends Activity {
             });
             content.addView(carousel, new LinearLayout.LayoutParams(-1, 0, 1));
         }
+        FrameLayout backdrop = new FrameLayout(this);
+        backdrop.setBackground(rounded(LIBRARY_CARD, 12));
+        backdrop.setClipToOutline(true);
+        libraryBackdrop = new ImageView(this);
+        libraryBackdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        backdrop.addView(libraryBackdrop, new FrameLayout.LayoutParams(-1, -1));
+        View shade = new View(this);
+        shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+            new int[]{0xfa232429, 0xe5232429, 0x56232429}));
+        backdrop.addView(shade, new FrameLayout.LayoutParams(-1, -1));
         LinearLayout actions = new LinearLayout(this);
+        actions.setPadding(dp(10), dp(5), dp(6), dp(5));
         actions.setGravity(Gravity.CENTER_VERTICAL);
         LinearLayout summary = new LinearLayout(this);
         summary.setOrientation(LinearLayout.VERTICAL);
@@ -525,15 +1039,13 @@ public final class MainActivity extends Activity {
         actions.addView(summary, new LinearLayout.LayoutParams(0, -2, 1));
         playSelection = button("Jogar", this::launchSelection);
         actions.addView(playSelection);
-        content.addView(actions);
+        backdrop.addView(actions, new FrameLayout.LayoutParams(-1, -1));
+        LinearLayout.LayoutParams bannerSize = new LinearLayout.LayoutParams(-1, dp(72));
+        bannerSize.topMargin = dp(7);
+        bannerSize.bottomMargin = dp(7);
+        content.addView(backdrop, bannerSize);
+        addBottomBar(content, false);
         renderGames();
-    }
-
-    private void updateLibraryConnection() {
-        String plan = libraryInfo[2];
-        String network = libraryNetwork();
-        connectionStatus.setText(plan.isEmpty() ? network :
-            network.isEmpty() ? plan : plan + " · " + network);
     }
 
     private String libraryNetwork() {
@@ -587,7 +1099,7 @@ public final class MainActivity extends Activity {
     }
 
     private void launchSelection() {
-        if (!libraryVisible || loadingGames || games.length == 0) return;
+        if (!libraryVisible || home || loadingGames || games.length == 0) return;
         int selected = selection;
         if (!games[selected * GAME_FIELDS + PREMIUM].isEmpty() && !libraryInfo[3].isEmpty()) {
             long token = operation;
@@ -612,7 +1124,7 @@ public final class MainActivity extends Activity {
     private void loadGames(String query) {
         if (loadingGames) return;
         loadingGames = true;
-        playSelection.setEnabled(false);
+        if (playSelection != null) playSelection.setEnabled(false);
         libraryStatus.setText("Carregando jogos…");
         long token = ++operation;
         worker.execute(() -> {
@@ -627,7 +1139,7 @@ public final class MainActivity extends Activity {
             } catch (Exception error) {
                 post(token, () -> {
                     loadingGames = false;
-                    playSelection.setEnabled(games.length != 0);
+                    if (playSelection != null) playSelection.setEnabled(games.length != 0);
                     libraryStatus.setText(message(error));
                 });
             }
@@ -637,7 +1149,7 @@ public final class MainActivity extends Activity {
     private void loadSection(int selected) {
         if (loadingGames) return;
         loadingGames = true;
-        playSelection.setEnabled(false);
+        if (playSelection != null) playSelection.setEnabled(false);
         libraryStatus.setText("Carregando jogos…");
         long token = ++operation;
         worker.execute(() -> {
@@ -652,7 +1164,7 @@ public final class MainActivity extends Activity {
             } catch (Exception error) {
                 post(token, () -> {
                     loadingGames = false;
-                    playSelection.setEnabled(games.length != 0);
+                    if (playSelection != null) playSelection.setEnabled(games.length != 0);
                     libraryStatus.setText(message(error));
                 });
             }
@@ -691,8 +1203,12 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshDiscoveredGames(long generation) {
-        if (!canExploreCatalog(generation) || !libraryVisible || loadingGames ||
-            !search.isEmpty() || (section != ALL_GAMES && section != PREMIUM_GAMES)) return;
+        if (!canExploreCatalog(generation) || !libraryVisible || loadingGames) return;
+        if (home) {
+            refreshHomeRows();
+            return;
+        }
+        if (!search.isEmpty() || (section != ALL_GAMES && section != PREMIUM_GAMES)) return;
         loadingGames = true;
         long token = operation;
         int visibleSection = section;
@@ -718,21 +1234,39 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void refreshHomeRows() {
+        long token = operation;
+        worker.execute(() -> {
+            if (isCancelled(token)) return;
+            try {
+                String[][] rows = readHomeRows();
+                post(token, () -> {
+                    if (libraryVisible && home && !loadingGames &&
+                        !java.util.Arrays.deepEquals(homeRows, rows)) showHome(rows, true);
+                });
+            } catch (Exception ignored) {
+                // Keep the current home snapshot when a refresh fails.
+            }
+        });
+    }
+
     private void showLibraryMenu() {
         if (loadingGames) return;
         new AlertDialog.Builder(this)
             .setTitle("Menu da biblioteca")
             .setItems(new String[]{"Recarregar biblioteca", "Carregar mais jogos",
                 listLayout ? "Mostrar carrossel" : "Mostrar lista simples", "Idioma dos jogos",
-                "Sair do LunaNX"}, (dialog, which) -> {
+                "Luna Premium", "Sair do LunaNX"}, (dialog, which) -> {
                 if (which == 0) refreshLibrary();
                 else if (which == 1) {
                     loadSection(ALL_GAMES);
                     startCatalogDiscovery(true);
                 } else if (which == 2) {
                     getPreferences(MODE_PRIVATE).edit().putBoolean("library_list", !listLayout).apply();
-                    showLibrary(games);
+                    if (home) loadSection(ALL_GAMES);
+                    else showLibrary(games);
                 } else if (which == 3) showGameLanguage();
+                else if (which == 4) loadSection(PREMIUM_GAMES);
                 else finish();
             }).show();
     }
@@ -749,7 +1283,7 @@ public final class MainActivity extends Activity {
                 new AlertDialog.Builder(this)
                     .setTitle(title)
                     .setMessage(plan + "\nLoja da conta: " + info[4] +
-                        "\nJogos disponíveis: " + info[5])
+                        "\nJogos disponíveis: " + info[5] + "\n" + libraryNetwork())
                     .setPositiveButton("Fechar", null)
                     .setNeutralButton("Menu", (dialog, which) -> showLibraryMenu())
                     .setNegativeButton("Sair da conta", (dialog, which) -> signOut())
@@ -782,7 +1316,8 @@ public final class MainActivity extends Activity {
                 else openLibrary(token);
             } catch (Exception error) {
                 post(token, () -> {
-                    showLibrary(games);
+                    if (home && homeRows != null) showHome(homeRows);
+                    else showLibrary(games);
                     libraryStatus.setText(message(error));
                 });
             }
@@ -824,7 +1359,7 @@ public final class MainActivity extends Activity {
                 tile.setOrientation(list ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
                 tile.setGravity(Gravity.CENTER_VERTICAL);
                 tile.setPadding(dp(8), dp(4), dp(8), dp(4));
-                tile.setBackground(rounded(CARD, 12));
+                tile.setBackground(rounded(LIBRARY_CARD, 12));
                 if (!list) tile.setLayoutParams(new Gallery.LayoutParams(dp(146), -1));
                 ImageView cover = new ImageView(MainActivity.this);
                 cover.setScaleType(ImageView.ScaleType.FIT_CENTER);
@@ -1286,8 +1821,13 @@ public final class MainActivity extends Activity {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().getDecorView().setSystemUiVisibility(0);
         setRequestedOrientation(returnOrientation);
-        showLibrary(games);
-        if (section == RECENT_GAMES) loadSection(RECENT_GAMES);
+        if (home) {
+            showHome(homeRows);
+            refreshHomeRows();
+        } else {
+            showLibrary(games);
+            if (section == RECENT_GAMES) loadSection(RECENT_GAMES);
+        }
         startCatalogDiscovery(false);
     }
 
@@ -1466,6 +2006,36 @@ public final class MainActivity extends Activity {
     }
 
     private boolean handleLibraryController(KeyEvent event) {
+        if (home) {
+            Runnable action;
+            switch (event.getKeyCode()) {
+                case KeyEvent.KEYCODE_BUTTON_A:
+                    View focus = getCurrentFocus();
+                    if (focus instanceof ListView) {
+                        ListView list = (ListView) focus;
+                        int position = list.getSelectedItemPosition();
+                        if (position == android.widget.AdapterView.INVALID_POSITION) return false;
+                        action = () -> list.performItemClick(list.getSelectedView(), position,
+                            list.getSelectedItemId());
+                    } else if (focus != null && focus.isClickable()) {
+                        action = focus::performClick;
+                    } else return false;
+                    break;
+                case KeyEvent.KEYCODE_BUTTON_X:
+                case KeyEvent.KEYCODE_BUTTON_START: action = this::showLibraryMenu; break;
+                case KeyEvent.KEYCODE_BUTTON_Y:
+                    action = () -> { if (!loadingGames) refreshLibrary(); };
+                    break;
+                case KeyEvent.KEYCODE_BUTTON_B:
+                    if (homeGenre.isEmpty()) return false;
+                    action = this::openHome;
+                    break;
+                default: return false;
+            }
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0)
+                action.run();
+            return true;
+        }
         int count = games.length / GAME_FIELDS;
         int step;
         switch (event.getKeyCode()) {
@@ -1526,7 +2096,7 @@ public final class MainActivity extends Activity {
         if (!event.isFromSource(InputDevice.SOURCE_JOYSTICK) ||
             event.getActionMasked() != MotionEvent.ACTION_MOVE)
             return super.onGenericMotionEvent(event);
-        if (libraryVisible && !(getCurrentFocus() instanceof EditText)) {
+        if (libraryVisible && !home && !(getCurrentFocus() instanceof EditText)) {
             float stick = axis(event, listLayout ? MotionEvent.AXIS_Y : MotionEvent.AXIS_X);
             float hat = event.getAxisValue(listLayout ? MotionEvent.AXIS_HAT_Y : MotionEvent.AXIS_HAT_X);
             float movement = Math.abs(hat) > Math.abs(stick) ? hat : stick;
@@ -1571,23 +2141,11 @@ public final class MainActivity extends Activity {
         if (player != null) showPlayerMenu();
         else if (authenticating) cancelSignIn();
         else if (libraryVisible && !search.isEmpty()) loadSection(ALL_GAMES);
+        else if (libraryVisible && (!home || !homeGenre.isEmpty())) openHome();
         else super.onBackPressed();
     }
 
-    @Override protected void onResume() {
-        super.onResume();
-        if (libraryVisible) updateLibraryConnection();
-        if (connectivity != null && !monitoringConnection) {
-            connectivity.registerDefaultNetworkCallback(connectionListener, ui);
-            monitoringConnection = true;
-        }
-    }
-
     @Override protected void onPause() {
-        if (monitoringConnection) {
-            connectivity.unregisterNetworkCallback(connectionListener);
-            monitoringConnection = false;
-        }
         if (player != null) resetPad();
         super.onPause();
     }

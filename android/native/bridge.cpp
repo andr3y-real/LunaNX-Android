@@ -168,7 +168,7 @@ std::string game_details(const luna::Game& game)
 jobjectArray game_rows(JNIEnv* env)
 {
     std::vector<std::string> rows;
-    rows.reserve(results.size() * 7);
+    rows.reserve(results.size() * 8);
     for (const auto& game : results)
     {
         rows.push_back(game.title);
@@ -180,6 +180,11 @@ jobjectArray game_rows(JNIEnv* env)
         rows.push_back(game.premium_only ? "1" : "");
         rows.push_back(game_key(game));
         rows.push_back(game_details(game));
+        std::string genres;
+        for (const auto& genre : game.genres)
+            if (!genre.empty())
+                genres += (genres.empty() ? "" : "\x1f") + genre;
+        rows.push_back(std::move(genres));
     }
     return strings(env, rows);
 }
