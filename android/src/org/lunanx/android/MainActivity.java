@@ -60,6 +60,8 @@ import android.view.animation.Animation;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Spinner;
+import android.widget.SeekBar;
+import android.widget.Switch;
 import android.widget.ArrayAdapter;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -159,6 +161,7 @@ public final class MainActivity extends Activity {
     private SurfaceView playerSurface;
     private AlertDialog playerMenu;
     private PlayerFraming playerFraming;
+    private StreamProfile playerProfile;
     private InputManager inputManager;
     private boolean gamepadConnected;
     private final InputManager.InputDeviceListener inputListener = new InputManager.InputDeviceListener() {
@@ -206,7 +209,8 @@ public final class MainActivity extends Activity {
     private native String[] nativeSection(int section);
     private native String[] nativeLibraryInfo();
     private native boolean nativeExplore(long generation, boolean force);
-    private native void nativeStart(int index, Surface surface, boolean preferBrazilianPortuguese);
+    private native void nativeStart(int index, Surface surface, boolean preferBrazilianPortuguese,
+                                    int height, int fps, int bitrateMbps);
     private native int nativeTick(int buttons, float lt, float rt, float lx, float ly, float rx, float ry);
     private native String[] nativeStatus();
     private native boolean nativeSetVideoSurface(Surface surface);
@@ -1319,7 +1323,10 @@ public final class MainActivity extends Activity {
             inlineSearch = false;
             loadSection(ALL_GAMES);
         });
-        addSetting(body, "play", "Enquadramento", "Ajustar, preencher ou esticar a imagem", this::showFramingSettings);
+        StreamProfile active = StreamProfile.active(getPreferences(MODE_PRIVATE));
+        addSetting(body, "play", "Perfis de transmissão", active.name + " · " + active.videoSummary(),
+            this::showStreamProfiles);
+        addSetting(body, "play", "Enquadramento padrão", "Usado pelos perfis prontos", this::showFramingSettings);
         addSetting(body, "action", "Idioma dos jogos", "Preferir português nas partidas", this::showGameLanguage);
         addSetting(body, "filter", "Catálogo", "Atualizar jogos ou ordenar a Biblioteca", this::showLibraryMenu);
         addSetting(body, "trophy", "Luna Premium", "Ver os jogos do plano Premium", () -> loadSection(PREMIUM_GAMES));
@@ -1329,12 +1336,196 @@ public final class MainActivity extends Activity {
         enterLibraryView(scroll, 0, 12);
     }
 
+    private PlayerFraming defaultFraming() {
+        return PlayerFraming.fromPreference(getPreferences(MODE_PRIVATE).getString("player_framing", ""));
+    }
+
+    private void showStreamProfiles() {
+        android.content.SharedPreferences prefs = getPreferences(MODE_PRIVATE);
+        StreamProfile active = StreamProfile.active(prefs);
+        Dialog dialog = new Dialog(this);
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout panel = profilePanel(scroll, "Perfis de transmissão");
+        TextView intro = text("O perfil ativo será usado ao tocar em Jogar.", 14, MUTED);
+        intro.setPadding(0, 0, 0, dp(12));
+        panel.addView(intro);
+
+        for (StreamProfile profile : StreamProfile.all(prefs)) {
+            boolean selected = profile.id.equals(active.id);
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setBackground(chrome(selected ? 0xff3c2955 : LIBRARY_CARD, 16));
+            LinearLayout.LayoutParams cardSize = new LinearLayout.LayoutParams(-1, -2);
+            cardSize.bottomMargin = dp(8);
+            panel.addView(card, cardSize);
+
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(12), dp(8), dp(12), dp(8));
+            row.setBackground(tapBackground(Color.TRANSPARENT, 16));
+            row.setFocusable(true);
+            row.setSelected(selected);
+            row.setOnClickListener(v -> {
+                profile.activate(prefs);
+                dialog.dismiss();
+                showSettings();
+                showStreamProfiles();
+            });
+            card.addView(row);
+
+            LinearLayout description = new LinearLayout(this);
+            description.setOrientation(LinearLayout.VERTICAL);
+            row.addView(description, new LinearLayout.LayoutParams(0, -2, 1f));
+            TextView name = text(profile.name, 16, Color.WHITE);
+            name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            description.addView(name);
+            description.addView(text(profile.videoSummary(), 13, 0xffd7c9e8));
+            if (selected) row.addView(text("Ativo", 13, LIBRARY_SELECTED));
+
+            if (profile.custom() && selected) {
+                LinearLayout actions = new LinearLayout(this);
+                actions.setPadding(dp(8), 0, dp(8), dp(8));
+                card.addView(actions);
+                LinearLayout.LayoutParams editSize = new LinearLayout.LayoutParams(0, -2, 1f);
+                editSize.setMarginEnd(dp(8));
+                actions.addView(libraryAction("Editar", false, () -> {
+                    dialog.dismiss();
+                    editStreamProfile(profile, true);
+                }), editSize);
+                actions.addView(libraryAction("Excluir", false, () -> new AlertDialog.Builder(this)
+                    .setTitle("Excluir " + profile.name + "?")
+                    .setMessage("O perfil Equilibrado será ativado.")
+                    .setNegativeButton("Cancelar", null)
+                    .setPositiveButton("Excluir", (confirm, which) -> {
+                        profile.remove(prefs);
+                        dialog.dismiss();
+                        showSettings();
+                        showStreamProfiles();
+                    }).show()), new LinearLayout.LayoutParams(0, -2, 1f));
+            }
+        }
+
+        panel.addView(libraryAction("Criar perfil", true, () -> {
+            dialog.dismiss();
+            editStreamProfile(active, false);
+        }));
+        LinearLayout.LayoutParams close = new LinearLayout.LayoutParams(-1, -2);
+        close.topMargin = dp(8);
+        panel.addView(libraryAction("Fechar", false, dialog::dismiss), close);
+        showLibraryDialog(dialog, scroll);
+    }
+
+    private LinearLayout profilePanel(ScrollView scroll, String title) {
+        scroll.setBackground(chrome(0xff20172d, 24));
+        scroll.setClipToOutline(true);
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(16), dp(14), dp(16), dp(16));
+        scroll.addView(panel);
+        TextView heading = heading(title);
+        heading.setTextSize(23);
+        heading.setPadding(0, 0, 0, dp(8));
+        panel.addView(heading);
+        return panel;
+    }
+
+    private Spinner profileChoice(LinearLayout panel, String label, String[] options, int selected) {
+        TextView heading = text(label, 13, MUTED);
+        heading.setPadding(0, dp(8), 0, dp(2));
+        panel.addView(heading);
+        Spinner choice = new Spinner(this, Spinner.MODE_DROPDOWN);
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, options);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        choice.setAdapter(adapter);
+        choice.setSelection(selected);
+        choice.setContentDescription(label);
+        choice.setBackgroundTintList(ColorStateList.valueOf(LIBRARY_SELECTED));
+        choice.setPadding(dp(12), 0, dp(12), 0);
+        panel.addView(choice, new LinearLayout.LayoutParams(-1, dp(46)));
+        return choice;
+    }
+
+    private void editStreamProfile(StreamProfile source, boolean editing) {
+        Dialog dialog = new Dialog(this);
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout panel = profilePanel(scroll, editing ? "Editar perfil" : "Novo perfil");
+        EditText name = new EditText(this);
+        name.setTextColor(Color.WHITE);
+        name.setHintTextColor(MUTED);
+        name.setHint("Nome do perfil");
+        name.setSingleLine(true);
+        name.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(32)});
+        name.setText(editing ? source.name : "");
+        name.setPadding(dp(12), 0, dp(12), 0);
+        name.setBackground(chrome(LIBRARY_CARD, 12));
+        panel.addView(name, new LinearLayout.LayoutParams(-1, dp(48)));
+
+        Spinner resolution = profileChoice(panel, "Resolução solicitada",
+            new String[]{"720p · 1280 × 720", "1080p · 1920 × 1080"}, source.height == 1080 ? 1 : 0);
+        Spinner rate = profileChoice(panel, "Taxa de quadros solicitada",
+            new String[]{"30 FPS", "60 FPS"}, source.fps == 60 ? 1 : 0);
+        TextView bitrate = text("", 14, Color.WHITE);
+        bitrate.setPadding(0, dp(12), 0, 0);
+        panel.addView(bitrate);
+        SeekBar cap = new SeekBar(this);
+        cap.setContentDescription("Limite de bitrate em megabits por segundo");
+        cap.setMax(StreamProfile.MAX_BITRATE - StreamProfile.MIN_BITRATE);
+        cap.setProgress(source.bitrateMbps - StreamProfile.MIN_BITRATE);
+        cap.setProgressTintList(ColorStateList.valueOf(LIBRARY_SELECTED));
+        cap.setThumbTintList(ColorStateList.valueOf(LIBRARY_SELECTED));
+        panel.addView(cap, new LinearLayout.LayoutParams(-1, dp(42)));
+        bitrate.setText("Limite de bitrate · " + source.bitrateMbps + " Mb/s");
+        cap.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar view, int progress, boolean fromUser) {
+                bitrate.setText("Limite de bitrate · " + (progress + StreamProfile.MIN_BITRATE) + " Mb/s");
+            }
+            @Override public void onStartTrackingTouch(SeekBar view) {}
+            @Override public void onStopTrackingTouch(SeekBar view) {}
+        });
+        PlayerFraming[] modes = PlayerFraming.values();
+        String[] framingLabels = new String[modes.length];
+        for (int i = 0; i < modes.length; i++) framingLabels[i] = modes[i].label;
+        Spinner framing = profileChoice(panel, "Enquadramento", framingLabels,
+            (source.custom() ? source.framing : defaultFraming()).ordinal());
+        Switch metrics = new Switch(this);
+        metrics.setText("Abrir com métricas visíveis");
+        metrics.setTextColor(Color.WHITE);
+        metrics.setChecked(source.metrics);
+        panel.addView(metrics, new LinearLayout.LayoutParams(-1, dp(52)));
+        panel.addView(libraryAction("Salvar e ativar", true, () -> {
+            String title = name.getText().toString().trim();
+            if (title.isEmpty()) {
+                name.setError("Dê um nome ao perfil.");
+                name.requestFocus();
+                return;
+            }
+            new StreamProfile(editing ? source.id : StreamProfile.newId(), title,
+                resolution.getSelectedItemPosition() == 1 ? 1080 : 720,
+                rate.getSelectedItemPosition() == 0 ? 30 : 60,
+                cap.getProgress() + StreamProfile.MIN_BITRATE,
+                modes[framing.getSelectedItemPosition()], metrics.isChecked())
+                .saveAndActivate(getPreferences(MODE_PRIVATE));
+            dialog.dismiss();
+            showSettings();
+            showStreamProfiles();
+        }));
+        LinearLayout.LayoutParams cancel = new LinearLayout.LayoutParams(-1, -2);
+        cancel.topMargin = dp(8);
+        panel.addView(libraryAction("Cancelar", false, () -> {
+            dialog.dismiss();
+            showStreamProfiles();
+        }), cancel);
+        panel.setFocusableInTouchMode(true);
+        panel.requestFocus();
+        dialog.setOnCancelListener(ignored -> showStreamProfiles());
+        showLibraryDialog(dialog, scroll);
+    }
+
     private void showFramingSettings() {
         PlayerFraming[] modes = PlayerFraming.values();
         String[] labels = new String[modes.length];
         for (int i = 0; i < modes.length; ++i) labels[i] = modes[i].label;
-        PlayerFraming current = PlayerFraming.fromPreference(
-            getPreferences(MODE_PRIVATE).getString("player_framing", ""));
+        PlayerFraming current = defaultFraming();
         new AlertDialog.Builder(this).setTitle("Enquadramento")
             .setSingleChoiceItems(labels, current.ordinal(), (dialog, which) -> {
                 getPreferences(MODE_PRIVATE).edit().putString("player_framing", modes[which].name()).apply();
@@ -1836,12 +2027,13 @@ public final class MainActivity extends Activity {
         ++artworkGeneration;
         selectedGame = index;
         playerTitle = games[index * GAME_FIELDS];
-        playbackReport = new PlaybackReport(SystemClock.elapsedRealtime());
+        playerProfile = StreamProfile.active(getPreferences(MODE_PRIVATE));
+        playbackReport = new PlaybackReport(SystemClock.elapsedRealtime(),
+            playerProfile.name + " · " + playerProfile.videoSummary());
         launching = true;
-        showMetrics = false;
+        showMetrics = playerProfile.metrics;
         videoSurfaceError = null;
-        playerFraming = PlayerFraming.fromPreference(
-            getPreferences(MODE_PRIVATE).getString("player_framing", ""));
+        playerFraming = playerProfile.custom() ? playerProfile.framing : defaultFraming();
         player = new FrameLayout(this);
         player.setBackgroundColor(Color.BLACK);
         setContentView(player);
@@ -1891,7 +2083,7 @@ public final class MainActivity extends Activity {
         FrameLayout current = player;
         SurfaceView surface = new SurfaceView(this);
         playerSurface = surface;
-        surface.getHolder().setFixedSize(PlayerFraming.VIDEO_WIDTH, PlayerFraming.VIDEO_HEIGHT);
+        surface.getHolder().setFixedSize(playerProfile.width(), playerProfile.height);
         surface.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override public void surfaceCreated(SurfaceHolder holder) {
                 if (isCancelled(token)) return;
@@ -1967,7 +2159,7 @@ public final class MainActivity extends Activity {
         launchPanel.setOrientation(LinearLayout.VERTICAL);
         launchPanel.setPadding(dp(20), dp(16), dp(20), dp(16));
         launchPanel.setBackground(chrome(0xff241930, 22));
-        launchPanel.addView(text(playerTitle, 14, 0xffd7c4ec));
+        launchPanel.addView(text(playerTitle + " · " + playerProfile.name, 14, 0xffd7c4ec));
 
         launchStage = heading("Preparando a sessão");
         launchStage.setTextSize(24);
@@ -2062,6 +2254,7 @@ public final class MainActivity extends Activity {
         title.setTextSize(21);
         title.setMaxLines(2);
         content.addView(title);
+        content.addView(text(playerProfile.name + " · " + playerProfile.videoSummary(), 13, MUTED));
         TextView label = text("Enquadramento", 13, MUTED);
         label.setPadding(0, dp(10), 0, dp(5));
         content.addView(label);
@@ -2074,7 +2267,8 @@ public final class MainActivity extends Activity {
         for (PlayerFraming option : PlayerFraming.values()) {
             Button item = playerAction(option.label, view -> {
                 playerFraming = option;
-                getPreferences(MODE_PRIVATE).edit().putString("player_framing", option.name()).apply();
+                if (!playerProfile.custom())
+                    getPreferences(MODE_PRIVATE).edit().putString("player_framing", option.name()).apply();
                 for (PlayerFraming choice : PlayerFraming.values()) {
                     applyPlayerButtonStyle(options[choice.ordinal()], choice == option);
                 }
@@ -2173,10 +2367,7 @@ public final class MainActivity extends Activity {
             }
         }
         gamepadConnected = controllerDevice != -1;
-        if (!wasConnected && gamepadConnected) {
-            showMetrics = false;
-            if (playerMenu != null) playerMenu.dismiss();
-        }
+        if (!wasConnected && gamepadConnected && playerMenu != null) playerMenu.dismiss();
         updatePlayerOverlays();
     }
 
@@ -2224,7 +2415,8 @@ public final class MainActivity extends Activity {
         if (isCancelled(token)) return;
         try {
             boolean preferPortuguese = getPreferences(MODE_PRIVATE).getBoolean("prefer_pt_br", false);
-            nativeStart(selectedGame, target, preferPortuguese);
+            StreamProfile profile = playerProfile;
+            nativeStart(selectedGame, target, preferPortuguese, profile.height, profile.fps, profile.bitrateMbps);
             PlaybackReport report = playbackReport;
             playbackTicker = worker.scheduleWithFixedDelay(new Runnable() {
                 long checkedAt;
@@ -2341,6 +2533,7 @@ public final class MainActivity extends Activity {
 
     private void stopPlaybackAsync(PlaybackReport report) {
         String game = playerTitle;
+        String profileName = playerProfile == null ? "" : playerProfile.name;
         worker.execute(() -> {
             if (playbackTicker != null) playbackTicker.cancel(false);
             playbackTicker = null;
@@ -2358,7 +2551,7 @@ public final class MainActivity extends Activity {
             String[] stats = report.highlights(now);
             ui.post(() -> {
                 if (!destroyed && player == null && libraryVisible && playbackReport == report)
-                    showPlaybackReport(game, stats, summary);
+                    showPlaybackReport(game, profileName, stats, summary);
             });
         });
     }
@@ -2379,7 +2572,7 @@ public final class MainActivity extends Activity {
         return number;
     }
 
-    private void showPlaybackReport(String game, String[] stats, String summary) {
+    private void showPlaybackReport(String game, String profileName, String[] stats, String summary) {
         Dialog dialog = new Dialog(this);
         ScrollView scroll = new ScrollView(this);
         scroll.setBackground(chrome(0xff20172d, 26));
@@ -2391,7 +2584,7 @@ public final class MainActivity extends Activity {
         TextView title = heading("Relatório da partida");
         title.setTextSize(23);
         panel.addView(title);
-        TextView session = text(game + " · " + stats[0], 14, 0xffc9b8da);
+        TextView session = text(game + " · " + stats[0] + "\nPerfil " + profileName, 14, 0xffc9b8da);
         session.setPadding(0, dp(4), 0, dp(12));
         panel.addView(session);
 

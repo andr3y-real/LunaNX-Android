@@ -567,7 +567,7 @@ extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeExplore)(
 }
 
 extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeStart)(
-    JNIEnv* env, jobject, jint index, jobject surface, jboolean prefer_pt_br)
+    JNIEnv* env, jobject, jint index, jobject surface, jboolean prefer_pt_br, jint height, jint fps, jint bitrate_mbps)
 {
     try
     {
@@ -580,7 +580,8 @@ extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeStart)(
             ANativeWindow_fromSurface(env, surface), ANativeWindow_release);
         if (!window)
             throw std::runtime_error("A tela do jogo não está disponível.");
-        auto next = std::make_unique<LunaStreamSession>(client, results[index], window.get(), prefer_pt_br == JNI_TRUE);
+        auto next = std::make_unique<LunaStreamSession>(
+            client, results[index], window.get(), prefer_pt_br == JNI_TRUE, height, fps, bitrate_mbps);
         next->start();
         playing = results[index];
         session = std::move(next);

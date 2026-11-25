@@ -100,7 +100,7 @@ void on_rtp_sender_report_cb(uint32_t ssrc, uint64_t ntp_us, uint32_t rtp_timest
 
 LunaStreamSession::LunaStreamSession(std::shared_ptr<const luna::LunaClient> client, luna::Game game
 #ifdef __ANDROID__
-                                     , ANativeWindow* window, bool prefer_pt_br
+                                     , ANativeWindow* window, bool prefer_pt_br, int height, int fps, int bitrate_mbps
 #endif
 )
     : client_(std::move(client)),
@@ -115,6 +115,12 @@ LunaStreamSession::LunaStreamSession(std::shared_ptr<const luna::LunaClient> cli
     audio_ = std::make_unique<AudioPipeline>();
     audio_->configure(settings_.audio_volume, settings_.audio_buffer_ms);
 #ifdef __ANDROID__
+    settings_.height = height == 1080 ? 1080 : 720;
+    settings_.width = settings_.height == 1080 ? 1920 : 1280;
+    settings_.fps = fps == 30 ? 30 : 60;
+    settings_.bitrate_kbps = std::clamp(bitrate_mbps, 3, 20) * 1000;
+    settings_.label = std::to_string(settings_.height) + "p" + std::to_string(settings_.fps);
+    settings_.preset_id = settings_.label;
     if (prefer_pt_br)
         launch_locale_ = "pt_BR";
     decoder_ = std::make_unique<AndroidVideoDecoder>(

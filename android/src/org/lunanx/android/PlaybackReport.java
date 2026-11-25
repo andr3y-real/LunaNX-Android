@@ -7,6 +7,7 @@ final class PlaybackReport {
     private static final int STREAMING = 3;
     private static final int EVENT_LIMIT = 12;
     private final long startedAt;
+    private final String profile;
     private final long[][] events = new long[EVENT_LIMIT][6];
     private int eventIndex;
     private int eventCount;
@@ -38,7 +39,12 @@ final class PlaybackReport {
     private boolean reachedStreaming;
 
     PlaybackReport(long startedAt) {
+        this(startedAt, "");
+    }
+
+    PlaybackReport(long startedAt, String profile) {
         this.startedAt = startedAt;
+        this.profile = profile;
     }
 
     void sample(long now, int phase, long bytes, long received, long decoded, String[] status) {
@@ -115,6 +121,7 @@ final class PlaybackReport {
         out.append("LunaNX · Relatório da partida\n");
         out.append("Duração: ").append(Math.max(0, now - startedAt) / 1000).append(" s\n");
         out.append("Chegou a transmitir: ").append(reachedStreaming ? "sim" : "não").append('\n');
+        if (!profile.isEmpty()) out.append("Perfil solicitado: ").append(profile).append('\n');
         if (samples == 0) return out.append("Sem amostras de vídeo nesta partida.").toString();
         out.append("Quadros recebidos / decodificados: ").append(received).append(" / ").append(decoded).append('\n');
         out.append("Quadros programados para a tela: ").append(scheduled).append('\n');

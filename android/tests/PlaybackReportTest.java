@@ -2,7 +2,7 @@ package org.lunanx.android;
 
 public final class PlaybackReportTest {
     public static void main(String[] args) {
-        PlaybackReport report = new PlaybackReport(100);
+        PlaybackReport report = new PlaybackReport(100, "Teste A · 720p · 30 FPS · até 5 Mb/s");
         require(report.format(500), "Sem amostras");
         require(report.highlights(500)[0], "transmissão não iniciada");
         require(report.highlights(500)[1], "—");
@@ -26,6 +26,7 @@ public final class PlaybackReportTest {
         require(highlights[3], "93.3%");
         require(highlights[4], "1");
         String summary = report.format(2300);
+        require(summary, "Perfil solicitado: Teste A · 720p · 30 FPS · até 5 Mb/s");
         require(summary, "60.0 / 30.0");
         require(summary, "8.0 Mb/s");
         require(summary, "Quadros programados para a tela: 56");

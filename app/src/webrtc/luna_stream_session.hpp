@@ -51,7 +51,7 @@ class LunaStreamSession
 
     LunaStreamSession(std::shared_ptr<const luna::LunaClient> client, luna::Game game
 #ifdef __ANDROID__
-                      , ANativeWindow* window, bool prefer_pt_br
+                      , ANativeWindow* window, bool prefer_pt_br, int height, int fps, int bitrate_mbps
 #endif
     );
     ~LunaStreamSession();
