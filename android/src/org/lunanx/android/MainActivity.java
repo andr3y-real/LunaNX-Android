@@ -62,6 +62,7 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.ArrayAdapter;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -142,7 +143,9 @@ public final class MainActivity extends Activity {
     private boolean catalogRefreshPending;
     private TextView libraryStatus;
     private TextView streamStatus;
-    private TextView metrics;
+    private LinearLayout metrics;
+    private TextView[] metricValues;
+    private TextView metricDetails;
     private View controls;
     private View playerMenuButton;
     private SurfaceView playerSurface;
@@ -1921,10 +1924,27 @@ public final class MainActivity extends Activity {
         playerMenuButton = menu;
         current.addView(menu, floating(dp(54), dp(44), Gravity.TOP | Gravity.START, 12));
 
-        metrics = text("", 13, Color.WHITE);
-        metrics.setPadding(dp(12), dp(7), dp(12), dp(7));
-        metrics.setBackground(rounded(0xdb10121c, 10));
-        current.addView(metrics, floating(-2, -2, Gravity.TOP | Gravity.END, 12));
+        metrics = new LinearLayout(this);
+        metrics.setOrientation(LinearLayout.VERTICAL);
+        metrics.setPadding(dp(4), dp(3), dp(4), dp(3));
+        metrics.setBackground(chrome(0xee20172d, 14));
+        LinearLayout metricRow = new LinearLayout(this);
+        metricValues = new TextView[3];
+        String[] labels = {"FPS vídeo", "Mb/s", "Variação RTP"};
+        for (int i = 0; i < labels.length; i++) {
+            LinearLayout cell = statCell(metricRow, labels[i]);
+            metricValues[i] = statValue(cell, "—");
+        }
+        metrics.addView(metricRow);
+        metricDetails = text("", 12, 0xffe0d4ef);
+        metricDetails.setPadding(dp(8), dp(4), dp(8), dp(8));
+        metricDetails.setVisibility(View.GONE);
+        metrics.addView(metricDetails);
+        metrics.setFocusable(true);
+        metrics.setContentDescription("Métricas da transmissão. Toque para alternar os detalhes.");
+        metrics.setOnClickListener(view -> metricDetails.setVisibility(
+            metricDetails.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
+        current.addView(metrics, floating(dp(282), -2, Gravity.TOP | Gravity.END, 12));
 
         controls = touchOverlay();
         current.addView(controls, new FrameLayout.LayoutParams(-1, -1));
@@ -2139,7 +2159,6 @@ public final class MainActivity extends Activity {
                 long lastBytes;
                 long lastReceived;
                 long lastDecoded;
-                String metricsLabel = "";
                 int previousRumble;
                 @Override public void run() {
                     if (isCancelled(token)) return;
@@ -2165,18 +2184,23 @@ public final class MainActivity extends Activity {
                             double mbps = (bytes - lastBytes) * 0.008 / elapsed;
                             long receivedFps = Math.round((received - lastReceived) * 1000.0 / elapsed);
                             long decodedFps = Math.round((decoded - lastDecoded) * 1000.0 / elapsed);
-                            metricsLabel = String.format(java.util.Locale.ROOT,
-                                "FPS entra %d / dec %d · %.1f Mb/s\nFila %s ms · var. %s ms · RTP danif. %s\nResets %s · codec %s · fila cheia %s\nCodec: %s pendentes · pico entrada até saída %s ms\nSem imagem %s · aguardando chave %s",
-                                receivedFps, decodedFps, mbps, status[8], status[9],
-                                status[6], status[7], status[10], status[11], status[12], status[13],
-                                status[14], status[15]);
+                            String bitrate = String.format(java.util.Locale.ROOT, "%.1f", mbps);
+                            String details = String.format(java.util.Locale.ROOT,
+                                "Entrada %d FPS · fila %s ms\nRTP danificado %s · aguardando chave %s\nResets %s · erros de codec %s · fila cheia %s\nCodec %s pendentes · pico %s ms · sem imagem %s",
+                                receivedFps, status[8], status[6], status[15],
+                                status[7], status[10], status[11], status[12], status[13], status[14]);
+                            post(token, () -> {
+                                metricValues[0].setText(Long.toString(decodedFps));
+                                metricValues[1].setText(bitrate);
+                                metricValues[2].setText(status[9] + " ms");
+                                metricDetails.setText(details);
+                            });
                         }
                         sampledAt = now;
                         lastBytes = bytes;
                         lastReceived = received;
                         lastDecoded = decoded;
                     }
-                    String label = metricsLabel;
                     post(token, () -> {
                         boolean showSurfaceError = phase < ENDED && videoSurfaceError != null;
                         boolean showStatus = phase != STREAMING || showSurfaceError;
@@ -2186,8 +2210,6 @@ public final class MainActivity extends Activity {
                         String message = showSurfaceError ? videoSurfaceError : status[1];
                         if (showStatus && !android.text.TextUtils.equals(streamStatus.getText(), message))
                             streamStatus.setText(message);
-                        if (showMetrics && !android.text.TextUtils.equals(metrics.getText(), label))
-                            metrics.setText(label);
                     });
                     if (phase >= ENDED) {
                         nativeStop();
@@ -2228,6 +2250,7 @@ public final class MainActivity extends Activity {
     }
 
     private void stopPlaybackAsync(PlaybackReport report) {
+        String game = playerTitle;
         worker.execute(() -> {
             if (playbackTicker != null) playbackTicker.cancel(false);
             playbackTicker = null;
@@ -2242,14 +2265,31 @@ public final class MainActivity extends Activity {
             nativeStop();
             if (report == null) return;
             String summary = report.format(now);
+            String[] stats = report.highlights(now);
             ui.post(() -> {
                 if (!destroyed && player == null && libraryVisible && playbackReport == report)
-                    showPlaybackReport(summary);
+                    showPlaybackReport(game, stats, summary);
             });
         });
     }
 
-    private void showPlaybackReport(String summary) {
+    private LinearLayout statCell(LinearLayout row, String label) {
+        LinearLayout cell = new LinearLayout(this);
+        cell.setOrientation(LinearLayout.VERTICAL);
+        cell.setPadding(dp(8), dp(6), dp(8), dp(6));
+        row.addView(cell, new LinearLayout.LayoutParams(0, -2, 1f));
+        cell.addView(text(label, 11, 0xffc9b8da));
+        return cell;
+    }
+
+    private TextView statValue(LinearLayout cell, String value) {
+        TextView number = text(value, 17, Color.WHITE);
+        number.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        cell.addView(number);
+        return number;
+    }
+
+    private void showPlaybackReport(String game, String[] stats, String summary) {
         Dialog dialog = new Dialog(this);
         ScrollView scroll = new ScrollView(this);
         scroll.setBackground(chrome(0xff20172d, 26));
@@ -2258,20 +2298,46 @@ public final class MainActivity extends Activity {
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(18), dp(16), dp(18), dp(16));
         scroll.addView(panel);
-        TextView report = text(summary, 14, Color.WHITE);
+        TextView title = heading("Relatório da partida");
+        title.setTextSize(23);
+        panel.addView(title);
+        TextView session = text(game + " · " + stats[0], 14, 0xffc9b8da);
+        session.setPadding(0, dp(4), 0, dp(12));
+        panel.addView(session);
+
+        String[] labels = {"FPS decodificado", "Bitrate recebido", "Programados para a tela", "Janelas sem decodificação"};
+        for (int i = 0; i < labels.length; i += 2) {
+            LinearLayout row = new LinearLayout(this);
+            row.setBackground(chrome(0xff302040, 12));
+            LinearLayout.LayoutParams spacing = new LinearLayout.LayoutParams(-1, -2);
+            spacing.bottomMargin = dp(8);
+            panel.addView(row, spacing);
+            statValue(statCell(row, labels[i]), stats[i + 1]);
+            statValue(statCell(row, labels[i + 1]), stats[i + 2]);
+        }
+
+        TextView report = text(summary, 13, 0xffe0d4ef);
         report.setTextIsSelectable(true);
-        report.setPadding(0, 0, 0, dp(16));
+        report.setPadding(0, dp(8), 0, dp(12));
+        report.setVisibility(View.GONE);
+        panel.addView(libraryAction("Detalhes técnicos", false, () ->
+            report.setVisibility(report.getVisibility() == View.GONE ? View.VISIBLE : View.GONE)));
         panel.addView(report);
-        panel.addView(libraryAction("Copiar relatório", true, () -> {
+        LinearLayout actions = new LinearLayout(this);
+        LinearLayout.LayoutParams actionSpacing = new LinearLayout.LayoutParams(-1, -2);
+        actionSpacing.topMargin = dp(8);
+        panel.addView(actions, actionSpacing);
+        LinearLayout.LayoutParams copyParams = new LinearLayout.LayoutParams(0, -2, 1f);
+        copyParams.rightMargin = dp(8);
+        actions.addView(libraryAction("Copiar relatório", true, () -> {
             ClipboardManager clipboard = getSystemService(ClipboardManager.class);
             if (clipboard != null) {
                 clipboard.setPrimaryClip(ClipData.newPlainText("Relatório de partida LunaNX", summary));
-                dialog.dismiss();
+                Toast.makeText(this, "Relatório copiado", Toast.LENGTH_SHORT).show();
             }
-        }));
-        LinearLayout.LayoutParams close = new LinearLayout.LayoutParams(-1, -2);
-        close.topMargin = dp(8);
-        panel.addView(libraryAction("Fechar", false, dialog::dismiss), close);
+        }), copyParams);
+        actions.addView(libraryAction("Fechar", false, dialog::dismiss),
+            new LinearLayout.LayoutParams(0, -2, 1f));
         showLibraryDialog(dialog, scroll);
     }
 

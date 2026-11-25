@@ -97,6 +97,19 @@ final class PlaybackReport {
         previousDecoded = decoded;
     }
 
+    String[] highlights(long now) {
+        long seconds = Math.max(0, now - startedAt) / 1000;
+        String duration = String.format(Locale.ROOT, "%d min %02d s", seconds / 60, seconds % 60);
+        if (!reachedStreaming) duration += " · transmissão não iniciada";
+        return new String[]{
+            duration,
+            measuredMs > 0 ? String.format(Locale.ROOT, "%.1f FPS", measuredDecoded * 1000.0 / measuredMs) : "—",
+            measuredMs > 0 ? String.format(Locale.ROOT, "%.1f Mb/s", measuredBytes * 0.008 / measuredMs) : "—",
+            decoded > 0 ? String.format(Locale.ROOT, "%.1f%%", Math.min(scheduled, decoded) * 100.0 / decoded) : "—",
+            measuredMs > 0 ? Integer.toString(zeroDecodedWindows) : "—"
+        };
+    }
+
     String format(long now) {
         StringBuilder out = new StringBuilder(512);
         out.append("LunaNX · Relatório da partida\n");

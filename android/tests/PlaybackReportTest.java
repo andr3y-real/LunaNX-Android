@@ -4,6 +4,8 @@ public final class PlaybackReportTest {
     public static void main(String[] args) {
         PlaybackReport report = new PlaybackReport(100);
         require(report.format(500), "Sem amostras");
+        require(report.highlights(500)[0], "transmissão não iniciada");
+        require(report.highlights(500)[1], "—");
         String[] status = {"3", "texto privado", "0", "0", "0", "0", "0",
             "0", "3", "4", "0", "0", "0", "6", "0", "0", "0", "0"};
         report.sample(100, 3, 0, 0, 0, status);
@@ -17,6 +19,12 @@ public final class PlaybackReportTest {
         status[17] = "1";
         report.sample(1100, 3, 1_000_000, 60, 60, status);
         report.sample(2100, 3, 2_000_000, 120, 60, status);
+        String[] highlights = report.highlights(2300);
+        require(highlights[0], "0 min 02 s");
+        require(highlights[1], "30.0 FPS");
+        require(highlights[2], "8.0 Mb/s");
+        require(highlights[3], "93.3%");
+        require(highlights[4], "1");
         String summary = report.format(2300);
         require(summary, "60.0 / 30.0");
         require(summary, "8.0 Mb/s");
