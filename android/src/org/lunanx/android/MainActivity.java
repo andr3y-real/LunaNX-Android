@@ -137,6 +137,7 @@ public final class MainActivity extends Activity {
     private static final int LIBRARY_SELECTED = 0xffd0baff;
     private String[] libraryInfo = {"", "", "", "", "", "0"};
     private volatile long catalogGeneration;
+    private volatile long artworkGeneration;
     private volatile boolean catalogPaused;
     private boolean catalogRefreshPending;
     private TextView libraryStatus;
@@ -158,7 +159,7 @@ public final class MainActivity extends Activity {
     private String[] games;
     private String search = "";
     private int section;
-    private boolean showMetrics;
+    private volatile boolean showMetrics;
     private boolean touchControls = true;
     private ScheduledFuture<?> playbackTicker;
     private PlaybackReport playbackReport;
@@ -1769,13 +1770,15 @@ public final class MainActivity extends Activity {
         Bitmap cached = covers.get(url);
         if (cached != null) image.setImageBitmap(cached);
         else image.setImageResource(R.drawable.lunanx_icon);
-        if (url.isEmpty() || cached != null) return;
+        if (url.isEmpty() || cached != null || player != null) return;
+        long generation = artworkGeneration;
         artwork.execute(() -> {
-            if (destroyed) return;
+            if (destroyed || artworkGeneration != generation) return;
             Bitmap ready = covers.get(url);
             if (ready != null) {
                 ui.post(() -> {
-                    if (!destroyed && url.equals(image.getTag())) revealArtwork(image, ready);
+                    if (!destroyed && artworkGeneration == generation && url.equals(image.getTag()))
+                        revealArtwork(image, ready);
                 });
                 return;
             }
@@ -1791,11 +1794,13 @@ public final class MainActivity extends Activity {
                 connection.setConnectTimeout(3500);
                 connection.setReadTimeout(3500);
                 try (InputStream input = connection.getInputStream()) {
+                    if (destroyed || artworkGeneration != generation) return;
                     Bitmap decoded = BitmapFactory.decodeStream(input);
                     if (decoded == null) return;
                     covers.put(url, decoded);
                     ui.post(() -> {
-                        if (!destroyed && url.equals(image.getTag())) revealArtwork(image, decoded);
+                        if (!destroyed && artworkGeneration == generation && url.equals(image.getTag()))
+                            revealArtwork(image, decoded);
                     });
                 }
             } catch (Exception ignored) {
@@ -1817,6 +1822,7 @@ public final class MainActivity extends Activity {
         libraryVisible = false;
         catalogPaused = true;
         ++catalogGeneration;
+        ++artworkGeneration;
         selectedGame = index;
         playerTitle = games[index * GAME_FIELDS];
         playbackReport = new PlaybackReport(SystemClock.elapsedRealtime());
@@ -2155,7 +2161,7 @@ public final class MainActivity extends Activity {
                     if (sampledAt == 0 || now - sampledAt >= 1000 || phase >= ENDED) {
                         report.sample(now, phase, bytes, received, decoded, status);
                         long elapsed = now - sampledAt;
-                        if (sampledAt != 0) {
+                        if (sampledAt != 0 && showMetrics) {
                             double mbps = (bytes - lastBytes) * 0.008 / elapsed;
                             long receivedFps = Math.round((received - lastReceived) * 1000.0 / elapsed);
                             long decodedFps = Math.round((decoded - lastDecoded) * 1000.0 / elapsed);
@@ -2173,9 +2179,15 @@ public final class MainActivity extends Activity {
                     String label = metricsLabel;
                     post(token, () -> {
                         boolean showSurfaceError = phase < ENDED && videoSurfaceError != null;
-                        streamStatus.setVisibility(phase == STREAMING && !showSurfaceError ? View.GONE : View.VISIBLE);
-                        streamStatus.setText(showSurfaceError ? videoSurfaceError : status[1]);
-                        metrics.setText(label);
+                        boolean showStatus = phase != STREAMING || showSurfaceError;
+                        int visibility = showStatus ? View.VISIBLE : View.GONE;
+                        if (streamStatus.getVisibility() != visibility)
+                            streamStatus.setVisibility(visibility);
+                        String message = showSurfaceError ? videoSurfaceError : status[1];
+                        if (showStatus && !android.text.TextUtils.equals(streamStatus.getText(), message))
+                            streamStatus.setText(message);
+                        if (showMetrics && !android.text.TextUtils.equals(metrics.getText(), label))
+                            metrics.setText(label);
                     });
                     if (phase >= ENDED) {
                         nativeStop();

@@ -108,6 +108,7 @@ static int peer_connection_send_rtcp_nack(PeerConnection* pc, uint32_t ssrc,
                                           uint16_t packet_id, uint16_t bitmask);
 static void peer_connection_maybe_send_video_nack(PeerConnection* pc);
 
+#if !defined(__ANDROID__)
 static void peer_connection_diag_log(const char* fmt, ...) {
   FILE* file = fopen("sdmc:/switch/LunaNX/signaling.log", "a");
   FILE* trace = fopen("sdmc:/switch/LunaNX/stream_trace.log", "a");
@@ -177,6 +178,27 @@ static void peer_connection_hex_preview(const uint8_t* data, int len, char* out,
     snprintf(out + pos, out_len - pos, " ...");
   }
 }
+
+static void peer_connection_diag_udp(const char* type, int count,
+                                     const uint8_t* data, int size) {
+  char preview[64];
+  peer_connection_hex_preview(data, size, preview, sizeof(preview));
+  peer_connection_diag_log("udp_class=%s count=%d bytes=%d preview=%s",
+                           type, count, size, preview);
+}
+
+static void peer_connection_diag_sctp(const uint8_t* data, int size, int count) {
+  char preview[64];
+  peer_connection_hex_preview(data, size, preview, sizeof(preview));
+  peer_connection_diag_log("dtls_read_appdata ret=%d sctpEvents=%d preview=%s",
+                           size, count, preview);
+}
+#else
+// The SD-card trace paths above belong to the Switch port.
+#define peer_connection_diag_log(...) ((void)0)
+#define peer_connection_diag_udp(...) ((void)0)
+#define peer_connection_diag_sctp(...) ((void)0)
+#endif
 
 static void peer_connection_outgoing_rtp_packet(uint8_t* data, size_t size, void* user_data) {
   PeerConnection* pc = (PeerConnection*)user_data;
@@ -677,16 +699,10 @@ static int peer_connection_loop_internal(PeerConnection* pc,
         packet_processed = 1;
         LOGD("agent_recv %d", pc->agent_ret);
         pc->completed_udp_packets++;
-        char preview[64];
-        peer_connection_hex_preview(pc->agent_buf, pc->agent_ret, preview, sizeof(preview));
-
         if (dtls_srtp_probe(pc->agent_buf)) {
           pc->completed_dtls_packets++;
           if (pc->completed_dtls_packets <= 10 || pc->completed_dtls_packets % 600 == 0) {
-            peer_connection_diag_log("udp_class=dtls count=%d bytes=%d preview=%s",
-                                     pc->completed_dtls_packets,
-                                     pc->agent_ret,
-                                     preview);
+            peer_connection_diag_udp("dtls", pc->completed_dtls_packets, pc->agent_buf, pc->agent_ret);
           }
           int ret = dtls_srtp_read(&pc->dtls_srtp, pc->temp_buf, sizeof(pc->temp_buf));
           LOGD("Got DTLS data %d", ret);
@@ -694,12 +710,7 @@ static int peer_connection_loop_internal(PeerConnection* pc,
           if (ret > 0) {
             pc->sctp_read_events++;
             if (pc->sctp_read_events <= 10 || pc->sctp_read_events % 600 == 0) {
-              char sctp_preview[64];
-              peer_connection_hex_preview(pc->temp_buf, ret, sctp_preview, sizeof(sctp_preview));
-              peer_connection_diag_log("dtls_read_appdata ret=%d sctpEvents=%d preview=%s",
-                                       ret,
-                                       pc->sctp_read_events,
-                                       sctp_preview);
+              peer_connection_diag_sctp(pc->temp_buf, ret, pc->sctp_read_events);
             }
             sctp_incoming_data(&pc->sctp, (char*)pc->temp_buf, ret);
           } else if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
@@ -717,10 +728,7 @@ static int peer_connection_loop_internal(PeerConnection* pc,
           LOGD("Got RTCP packet");
           pc->completed_rtcp_packets++;
           if (pc->completed_rtcp_packets <= 5 || pc->completed_rtcp_packets % 600 == 0) {
-            peer_connection_diag_log("udp_class=rtcp count=%d bytes=%d preview=%s",
-                                     pc->completed_rtcp_packets,
-                                     pc->agent_ret,
-                                     preview);
+            peer_connection_diag_udp("rtcp", pc->completed_rtcp_packets, pc->agent_buf, pc->agent_ret);
           }
           if (dtls_srtp_decrypt_rtcp_packet(&pc->dtls_srtp, pc->agent_buf, &pc->agent_ret) != 0) {
             pc->rtcp_decrypt_failures++;
@@ -736,10 +744,7 @@ static int peer_connection_loop_internal(PeerConnection* pc,
           pc->completed_rtp_packets++;
 
           if (pc->completed_rtp_packets <= 10 || pc->completed_rtp_packets % 1200 == 0) {
-            peer_connection_diag_log("udp_class=rtp count=%d bytes=%d preview=%s",
-                                     pc->completed_rtp_packets,
-                                     pc->agent_ret,
-                                     preview);
+            peer_connection_diag_udp("rtp", pc->completed_rtp_packets, pc->agent_buf, pc->agent_ret);
           }
 
           if (dtls_srtp_decrypt_rtp_packet(&pc->dtls_srtp, pc->agent_buf, &pc->agent_ret) != 0) {
@@ -845,10 +850,8 @@ static int peer_connection_loop_internal(PeerConnection* pc,
         } else {
           pc->completed_unknown_packets++;
           if (pc->completed_unknown_packets <= 10 || pc->completed_unknown_packets % 600 == 0) {
-            peer_connection_diag_log("udp_class=unknown count=%d bytes=%d preview=%s totals udp/rtcp/dtls/rtp/unknown=%d/%d/%d/%d/%d",
-                                     pc->completed_unknown_packets,
-                                     pc->agent_ret,
-                                     preview,
+            peer_connection_diag_udp("unknown", pc->completed_unknown_packets, pc->agent_buf, pc->agent_ret);
+            peer_connection_diag_log("totals udp/rtcp/dtls/rtp/unknown=%d/%d/%d/%d/%d",
                                      pc->completed_udp_packets,
                                      pc->completed_rtcp_packets,
                                      pc->completed_dtls_packets,
