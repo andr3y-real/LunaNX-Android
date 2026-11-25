@@ -85,6 +85,8 @@ class LunaStreamSession
         uint64_t arrival_jitter_ms = 0;
         uint64_t codec_pending = 0;
         uint64_t codec_age_ms = 0;
+        uint64_t non_picture_units = 0;
+        uint64_t waiting_for_keyframe_drops = 0;
     };
     AndroidVideoStats android_video_stats();
     bool set_android_surface(ANativeWindow* window);
@@ -186,6 +188,7 @@ class LunaStreamSession
     std::atomic<uint64_t> decoder_resets_ {0};
     std::atomic<uint64_t> codec_resets_ {0};
     std::atomic<uint64_t> queue_recoveries_ {0};
+    uint64_t waiting_for_keyframe_drops_ = 0; // Guarded by decoder_queue_mutex_.
     std::atomic<bool> video_surface_attached_ {true};
     std::atomic<uint64_t> video_surface_generation_ {0};
 #else

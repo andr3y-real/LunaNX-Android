@@ -430,7 +430,10 @@ static void rtp_decoder_flush_access_unit(RtpDecoder* rtp_decoder) {
       rtp_decoder->on_packet(rtp_decoder->au_buf, rtp_decoder->au_offset, rtp_decoder->user_data);
     rtp_decoder->access_units_completed++;
   } else if (rtp_decoder->au_offset > 0) {
-    rtp_decoder->access_units_dropped++;
+    if (rtp_decoder->au_damaged)
+      rtp_decoder->access_units_dropped++;
+    else
+      rtp_decoder->non_picture_access_units++;
   }
 
   rtp_decoder_reset_access_unit(rtp_decoder);

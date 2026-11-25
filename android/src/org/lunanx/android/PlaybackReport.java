@@ -7,7 +7,7 @@ final class PlaybackReport {
     private static final int STREAMING = 3;
     private static final int EVENT_LIMIT = 12;
     private final long startedAt;
-    private final long[][] events = new long[EVENT_LIMIT][5];
+    private final long[][] events = new long[EVENT_LIMIT][6];
     private int eventIndex;
     private int eventCount;
     private long previousSample;
@@ -17,6 +17,8 @@ final class PlaybackReport {
     private long received;
     private long decoded;
     private long drops;
+    private long nonPictureUnits;
+    private long waitingForKeyframeDrops;
     private long resets;
     private long codecErrors;
     private long queueFull;
@@ -41,17 +43,22 @@ final class PlaybackReport {
         long newResets = Long.parseLong(status[7]);
         long newCodecErrors = Long.parseLong(status[10]);
         long newQueueFull = Long.parseLong(status[11]);
-        if (newDrops > drops || newResets > resets || newCodecErrors > codecErrors || newQueueFull > queueFull) {
+        long newWaitingDrops = Long.parseLong(status[15]);
+        if (newDrops > drops || newResets > resets || newCodecErrors > codecErrors ||
+            newQueueFull > queueFull || newWaitingDrops > waitingForKeyframeDrops) {
             long[] event = events[eventIndex];
             event[0] = (now - startedAt) / 1000;
             event[1] = newDrops - drops;
             event[2] = newResets - resets;
             event[3] = newCodecErrors - codecErrors;
             event[4] = newQueueFull - queueFull;
+            event[5] = newWaitingDrops - waitingForKeyframeDrops;
             eventIndex = (eventIndex + 1) % EVENT_LIMIT;
             eventCount = Math.min(eventCount + 1, EVENT_LIMIT);
         }
         drops = newDrops;
+        nonPictureUnits = Long.parseLong(status[14]);
+        waitingForKeyframeDrops = newWaitingDrops;
         resets = newResets;
         codecErrors = newCodecErrors;
         queueFull = newQueueFull;
@@ -99,7 +106,9 @@ final class PlaybackReport {
             out.append("Menor FPS decodificado por janela: ").append(minimumDecodedFps).append('\n');
             out.append("Janelas de ~1 s sem decodificação: ").append(zeroDecodedWindows).append('\n');
         }
-        out.append("Descartes RTP: ").append(drops).append('\n');
+        out.append("Unidades RTP danificadas: ").append(drops).append('\n');
+        out.append("Unidades H.264 sem imagem: ").append(nonPictureUnits).append('\n');
+        out.append("Quadros descartados aguardando imagem-chave: ").append(waitingForKeyframeDrops).append('\n');
         out.append("Resets do decoder: ").append(resets)
             .append(" (").append(codecErrors).append(" por erro de codec)\n");
         out.append("Recuperações por fila cheia: ").append(queueFull).append('\n');
@@ -113,7 +122,8 @@ final class PlaybackReport {
                 out.append(event[0]).append(" s · RTP +").append(event[1])
                     .append(" · resets +").append(event[2])
                     .append(" · erros +").append(event[3])
-                    .append(" · fila cheia +").append(event[4]).append('\n');
+                    .append(" · fila cheia +").append(event[4])
+                    .append(" · aguardando chave +").append(event[5]).append('\n');
             }
         }
         return out.toString();

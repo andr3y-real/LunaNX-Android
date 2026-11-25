@@ -1415,6 +1415,7 @@ int peer_connection_get_video_rtp_stats(PeerConnection* pc, PeerVideoRtpStats* s
       pc->vrtp_decoder.reorder_burst_fast_forwards;
   stats->access_units_completed = pc->vrtp_decoder.access_units_completed;
   stats->access_units_dropped = pc->vrtp_decoder.access_units_dropped;
+  stats->non_picture_access_units = pc->vrtp_decoder.non_picture_access_units;
   stats->nack_requests = pc->video_nack_requests;
   stats->nack_packets_requested = pc->video_nack_packets_requested;
   stats->nack_retries = pc->video_nack_retries;

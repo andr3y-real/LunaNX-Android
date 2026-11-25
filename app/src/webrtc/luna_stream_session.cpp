@@ -849,6 +849,9 @@ void LunaStreamSession::enqueue_decode_unit(const uint8_t* data, size_t size, ui
 #endif
     if (decoder_resync_required_.load() && !idr)
     {
+#ifdef __ANDROID__
+        ++waiting_for_keyframe_drops_;
+#endif
         decoder_queue_drops_++;
         keyframe_needed_.store(true, std::memory_order_release);
         return;
@@ -1138,7 +1141,8 @@ LunaStreamSession::AndroidVideoStats LunaStreamSession::android_video_stats()
             codec_resets_.load(), queue_recoveries_.load(), queue_ms,
             static_cast<uint64_t>(arrival_jitter_us_ / 1000),
             decoder_ ? decoder_->codec_pending() : 0,
-            decoder_ ? decoder_->codec_age_us(NowUs()) / 1000 : 0};
+            decoder_ ? decoder_->codec_age_us(NowUs()) / 1000 : 0,
+            rtp.non_picture_access_units, waiting_for_keyframe_drops_};
 }
 #endif
 

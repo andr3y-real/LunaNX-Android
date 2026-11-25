@@ -102,6 +102,7 @@ typedef struct PeerVideoRtpStats {
   uint32_t reorder_burst_fast_forwards;
   uint32_t access_units_completed;
   uint32_t access_units_dropped;
+  uint32_t non_picture_access_units;
   uint32_t nack_requests;
   uint32_t nack_packets_requested;
   uint32_t nack_retries;

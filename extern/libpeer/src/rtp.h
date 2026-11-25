@@ -121,6 +121,7 @@ struct RtpDecoder {
   uint32_t nal_units_completed;
   uint32_t access_units_completed;
   uint32_t access_units_dropped;
+  uint32_t non_picture_access_units;
   uint32_t single_packets;
   uint32_t stap_packets;
   uint32_t fu_packets;

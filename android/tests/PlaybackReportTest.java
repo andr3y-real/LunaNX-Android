@@ -5,11 +5,13 @@ public final class PlaybackReportTest {
         PlaybackReport report = new PlaybackReport(100);
         require(report.format(500), "Sem amostras");
         String[] status = {"3", "texto privado", "0", "0", "0", "0", "0",
-            "0", "3", "4", "0", "0", "0", "6"};
+            "0", "3", "4", "0", "0", "0", "6", "0", "0"};
         report.sample(100, 3, 0, 0, 0, status);
         status[6] = "2";
         status[7] = "1";
         status[13] = "90";
+        status[14] = "5";
+        status[15] = "3";
         report.sample(1100, 3, 1_000_000, 60, 60, status);
         report.sample(2100, 3, 2_000_000, 120, 60, status);
         String summary = report.format(2300);
@@ -18,6 +20,9 @@ public final class PlaybackReportTest {
         require(summary, "Janelas de ~1 s sem decodificação: 1");
         require(summary, "Resets do decoder: 1");
         require(summary, "RTP +2");
+        require(summary, "sem imagem: 5");
+        require(summary, "aguardando imagem-chave: 3");
+        require(summary, "aguardando chave +3");
         require(summary, "idade no codec: 90 ms");
         if (summary.contains("texto privado")) throw new AssertionError("Status text leaked");
         for (int i = 0; i < 16; ++i) {
