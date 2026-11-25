@@ -845,8 +845,6 @@ static int peer_connection_loop_internal(PeerConnection* pc,
                   pc->vrtp_decoder.access_units_dropped);
             }
           }
-          peer_connection_maybe_send_video_nack(pc);
-
         } else {
           pc->completed_unknown_packets++;
           if (pc->completed_unknown_packets <= 10 || pc->completed_unknown_packets % 600 == 0) {
@@ -862,6 +860,7 @@ static int peer_connection_loop_internal(PeerConnection* pc,
         }
       }
 
+      peer_connection_maybe_send_video_nack(pc);
       if (pc->vrtp_decoder.reorder_buffered_packets != 0)
         rtp_decoder_expire_gap(&pc->vrtp_decoder, ports_get_monotonic_time_ms());
       agent_rtt_probe_tick(&pc->agent);
