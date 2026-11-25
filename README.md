@@ -1,33 +1,66 @@
 # LunaNX Android
 
-LunaNX started on the Nintendo Switch. This fork brings the client to Android, where you can browse and search your Amazon Luna library, then play in fullscreen with a Bluetooth controller, a USB controller, or on-screen controls.
+LunaNX Android is an experimental, community-maintained client for Amazon Luna. It brings the original Nintendo Switch project to Android with a searchable game library, fullscreen streaming, Bluetooth and USB gamepad support, and on-screen controls.
 
-The port is experimental. You'll need an ARM64 device running Android 9 or later and an Amazon account with Luna access. Your region and plan determine which games are available.
+<table>
+  <tr>
+    <th>Home</th>
+    <th>Library</th>
+    <th>Settings</th>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/android/home.png" alt="LunaNX home with featured and recently played games" width="230"></td>
+    <td><img src="docs/screenshots/android/library.png" alt="LunaNX library shown as a three-column cover grid" width="230"></td>
+    <td><img src="docs/screenshots/android/settings.png" alt="LunaNX Android settings with account details redacted" width="230"></td>
+  </tr>
+</table>
 
-## Playing a game
+## Getting started
 
-1. Open the app, select your Amazon account's country, and generate a sign-in code. Enter it on the Amazon page shown in the app.
-2. Pick a game from your library. The on-screen buttons disappear when you connect a physical controller.
-3. Double-tap the video or press **Start + Select** to open the player menu. From there, you can adjust how the video fits the screen, show playback metrics, or leave the game.
+You'll need an ARM64 device running Android 9 or later and an Amazon account with access to Luna. The game catalog depends on your account region and plan.
 
-To request Brazilian Portuguese for the next game you launch, open **Conta → Idioma dos jogos** (Account → Game language). This setting is experimental. Available languages and the controls for changing audio or subtitles vary by game.
+1. [Build and install the Android APK](#build-and-install).
+2. Open LunaNX, choose your Amazon account's country, and generate a sign-in code. Enter that code on the Amazon page shown in the app.
+3. Browse **Início** (Home) or **Biblioteca** (Library), or use **Pesquisar** (Search). Open a game and select **Jogar** (Play).
 
-## Building on Linux
+When Luna puts a launch in a queue, the waiting screen updates as the server reports your position and estimated wait. Once the stream connects and video starts, the player opens automatically. **Cancelar espera** stops waiting in the app and returns to the library.
 
-Install JDK 17 or later, Python 3.12 or later, CMake, and Ninja. Install Android SDK Platform 35, SDK Build Tools, and an Android NDK. Set `ANDROID_SDK_ROOT` and `ANDROID_NDK_HOME` to their installation directories, then run this command from the repository root.
+To request Brazilian Portuguese for the next game, open **Ajustes → Idioma dos jogos** (Settings → Game language). Available audio and subtitle languages vary by game.
+
+## Set up a streaming profile
+
+Open **Ajustes → Perfis de transmissão** (Settings → Stream profiles) to choose a preset or save your own.
+
+| Preset | Requested resolution | Requested FPS | Bitrate limit |
+| --- | ---: | ---: | ---: |
+| Economia (Data saver) | 720p | 30 | 5 Mb/s |
+| Equilibrado (Balanced, default) | 720p | 60 | 10 Mb/s |
+| Qualidade (Quality) | 1080p | 60 | 15 Mb/s |
+
+Choose **Criar perfil** (Create profile) to save a named configuration. Custom profiles offer 720p or 1080p, 30 or 60 FPS, a bitrate limit between 3 and 20 Mb/s, a screen fit mode, and the option to show metrics when play starts. The active profile applies to the next launch. Luna and the connection determine the video the device actually receives.
+
+## Player controls and diagnostics
+
+Double-tap the video or press **Start + Select** on a gamepad to open the player menu. Use it to fit the entire image, fill the screen with cropping, or stretch the image. On-screen controls hide when a physical controller connects.
+
+**Mostrar métricas** (Show metrics) displays decoded FPS, bitrate, and RTP jitter during play. Tap the overlay for queue, codec, and recovery counters.
+
+When you leave a game, the session report shows the requested profile, session time, average decoded FPS and bitrate, the share of decoded frames scheduled for the screen, and intervals without decoded video. **Detalhes técnicos** expands the full counters and recent events. **Copiar relatório** copies the full text.
+
+For a playback issue, share the report with your app version, device model, connection type, and what you saw during play. Mention screen mirroring if you used it. Review the report before sharing and keep Amazon credentials, sign-in codes, and signing keys private.
+
+## Build and install
+
+On Linux, install JDK 17 or later, Python 3.12 or later, CMake, and Ninja. Install Android SDK Platform 35, Android SDK Build Tools, and the Android NDK. Set `ANDROID_SDK_ROOT` and `ANDROID_NDK_HOME` to their installation directories. Check out the `android` branch and run this command from the repository root.
 
 ```sh
 JOBS=4 sh android/build-apk.sh
 ```
 
-The APK is written to `android/build/LunaNX-Android.apk`. The script generates a development signing key on the first build. To update an existing installation, sign the new APK with the same key as the installed one.
-
-## If playback stutters
-
-Open **Métricas** (Metrics) in the player menu. If you file an issue, include the app version, your device model, the incoming and decoded FPS, RTP drops, and reset counts. Mention whether you were mirroring the screen to a TV. Keep Amazon session credentials and signing keys on your device.
+Open `android/build/LunaNX-Android.apk` on your Android device to install it. The script creates a development signing key on the first build. Android requires the same signing key to install an update over an existing copy.
 
 ## Credits and license
 
-This fork ports LunaNX 3.1 to Android. It adds a native interface, H.264 video through asynchronous MediaCodec, AAudio playback, and Android controller support. The port changes were first published on November 25, 2026.
+**KazaR‑RooT** created LunaNX for Nintendo Switch. This fork ports LunaNX 3.1 to Android with a native interface, asynchronous H.264 decoding through MediaCodec, and AAudio playback. LunaNX Android is independent of Amazon and Nintendo.
 
-**KazaR‑RooT** created the original LunaNX. LunaNX Android is a community project independent of Amazon and Nintendo. See the [original LunaNX project](https://github.com/kazar-root/LunaNX), the [GPL‑3.0 license](LICENSE), and the [third-party notices](THIRD_PARTY_NOTICES.md).
+[Original LunaNX project](https://github.com/kazar-root/LunaNX) · [GPL‑3.0 license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md)
