@@ -6,6 +6,9 @@ LUNANX_SOURCE_ORIGIN(u48d4781612355cd4f4c6, "48d4781612355cd4f4c6")
 #include "http_client.hpp"
 
 #include "runtime_journal.hpp"
+#ifdef __ANDROID__
+#include "app_paths.hpp"
+#endif
 
 #include <curl/curl.h>
 
@@ -138,6 +141,10 @@ HttpResponse HttpClient::Request(
     curl_easy_setopt(curl.get(), CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYHOST, 2L);
+#ifdef __ANDROID__
+    const std::string ca_bundle = AppHomePath() + "/android-ca.pem";
+    curl_easy_setopt(curl.get(), CURLOPT_CAINFO, ca_bundle.c_str());
+#endif
     curl_easy_setopt(curl.get(), CURLOPT_ERRORBUFFER, error_buffer.data());
 
     if (header_list)
@@ -265,6 +272,10 @@ void HttpClient::DownloadToFile(
     curl_easy_setopt(curl.get(), CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYHOST, 2L);
+#ifdef __ANDROID__
+    const std::string ca_bundle = AppHomePath() + "/android-ca.pem";
+    curl_easy_setopt(curl.get(), CURLOPT_CAINFO, ca_bundle.c_str());
+#endif
     curl_easy_setopt(curl.get(), CURLOPT_ERRORBUFFER, error_buffer.data());
     curl_easy_setopt(curl.get(), CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl.get(), CURLOPT_XFERINFOFUNCTION, DownloadProgress);
@@ -307,6 +318,10 @@ int HttpClient::MeasureTcpHandshakeLatencyMs(
     curl_easy_setopt(curl.get(), CURLOPT_FRESH_CONNECT, 1L);
     curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl.get(), CURLOPT_SSL_VERIFYHOST, 2L);
+#ifdef __ANDROID__
+    const std::string ca_bundle = AppHomePath() + "/android-ca.pem";
+    curl_easy_setopt(curl.get(), CURLOPT_CAINFO, ca_bundle.c_str());
+#endif
 
     if (curl_easy_perform(curl.get()) != CURLE_OK)
         return -1;

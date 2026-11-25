@@ -1,0 +1,7 @@
+/build/
+/signing/
+*.p12
+*.jks
+*.keystore
+*.apk
+LunaNX-Android-*-source.zip

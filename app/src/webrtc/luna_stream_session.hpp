@@ -8,10 +8,14 @@
 #include "input/luna_input_encoder.hpp"
 #include "input/switch_rumble.hpp"
 #include "luna/luna_client.hpp"
-#include "stream/IVideoRenderer.hpp"
 #include "stream/live_metrics.hpp"
 #include "stream/audio/AudioPipeline.hpp"
+#ifdef __ANDROID__
+#include "android_video_decoder.hpp"
+#else
+#include "stream/IVideoRenderer.hpp"
 #include "stream/ffmpeg/FFmpegVideoDecoder.hpp"
+#endif
 
 #include "peer.h"
 #include "peer_connection.h"
@@ -45,7 +49,11 @@ class LunaStreamSession
         Failed,
     };
 
-    LunaStreamSession(std::shared_ptr<const luna::LunaClient> client, luna::Game game);
+    LunaStreamSession(std::shared_ptr<const luna::LunaClient> client, luna::Game game
+#ifdef __ANDROID__
+                      , ANativeWindow* window, bool prefer_pt_br
+#endif
+    );
     ~LunaStreamSession();
 
     void start();
@@ -55,13 +63,30 @@ class LunaStreamSession
     void poll();
 
     bool send_gamepad(const input::GamepadState& state);
+#ifndef __ANDROID__
     void draw(NVGcontext* vg, int width, int height, AVFrame* frame, uint64_t generation);
     int64_t video_target_rtp_timestamp() const;
+#endif
 
     Phase phase() const { return phase_.load(std::memory_order_acquire); }
     std::string status_text() const;
     std::string debug_text() const;
     StreamCounters stream_counters() const;
+#ifdef __ANDROID__
+    struct AndroidVideoStats
+    {
+        uint64_t received = 0;
+        uint64_t decoded = 0;
+        uint64_t discarded = 0;
+        uint64_t resets = 0;
+        uint64_t codec_resets = 0;
+        uint64_t queue_recoveries = 0;
+        uint64_t queue_ms = 0;
+        uint64_t arrival_jitter_ms = 0;
+    };
+    AndroidVideoStats android_video_stats();
+    bool set_android_surface(ANativeWindow* window);
+#endif
     bool input_ready() const { return input_sid_ >= 0; }
     const StreamSettings& settings() const { return settings_; }
 
@@ -90,7 +115,9 @@ class LunaStreamSession
         uint32_t rtp_timestamp = 0;
     };
 
+#ifndef __ANDROID__
     void setup_video_decoder();
+#endif
     bool setup_peer_connection();
     void signaling_loop();
     void network_loop();
@@ -133,7 +160,7 @@ class LunaStreamSession
     int datachannel_open_attempts_ = 0;
     uint32_t datachannel_opened_mask_ = 0;
     std::chrono::steady_clock::time_point last_datachannel_attempt_at_ {};
-    int input_sid_ = -1;
+    std::atomic<int> input_sid_ {-1};
     int client_message_sid_ = -1;
     std::chrono::steady_clock::time_point last_ping_at_ {};
     std::array<int, 16> datachannel_rx_logged_ {};
@@ -146,8 +173,23 @@ class LunaStreamSession
     std::mutex stop_mutex_;
     std::condition_variable stop_cv_;
 
+#ifdef __ANDROID__
+    std::unique_ptr<AndroidVideoDecoder> decoder_;
+    std::string launch_locale_;
+    uint64_t video_received_ = 0;
+    uint64_t video_run_start_us_ = 0;
+    uint64_t last_video_arrival_us_ = 0;
+    uint32_t last_video_rtp_timestamp_ = 0;
+    int64_t arrival_jitter_us_ = 0;
+    std::atomic<uint64_t> decoder_resets_ {0};
+    std::atomic<uint64_t> codec_resets_ {0};
+    std::atomic<uint64_t> queue_recoveries_ {0};
+    std::atomic<bool> video_surface_attached_ {true};
+    std::atomic<uint64_t> video_surface_generation_ {0};
+#else
     std::unique_ptr<FFmpegVideoDecoder> decoder_;
     std::unique_ptr<IVideoRenderer> renderer_;
+#endif
     std::unique_ptr<AudioPipeline> audio_;
     std::string video_backend_name_ = Tr("non initialisé");
 

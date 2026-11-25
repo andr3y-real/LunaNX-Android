@@ -6,18 +6,35 @@ LUNANX_SOURCE_ORIGIN(u23c239828debbf16bc21, "23c239828debbf16bc21")
 #include "app_paths.hpp"
 
 #include <sys/stat.h>
+#include <utility>
 
 namespace lunanx
 {
 
+#ifdef __ANDROID__
+namespace
+{
+std::string android_app_home;
+}
+
+void SetAndroidAppHome(std::string path)
+{
+    android_app_home = std::move(path);
+}
+#endif
+
 const std::string& AppHomePath()
 {
+#ifdef __ANDROID__
+    return android_app_home;
+#else
 #ifdef __SWITCH__
     static const std::string path = "sdmc:/switch/LunaNX";
 #else
     static const std::string path = "./LunaNX";
 #endif
     return path;
+#endif
 }
 
 void PrepareAppStorage()

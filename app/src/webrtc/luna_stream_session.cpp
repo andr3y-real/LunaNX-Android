@@ -13,8 +13,10 @@ LUNANX_SOURCE_ORIGIN(u86d0cb31882f7e48e9fb, "86d0cb31882f7e48e9fb")
 #include "luna/luna_sdp.hpp"
 #include "stream/DecodeQueuePolicy.hpp"
 #include "stream/audio/AudioRtpUtils.hpp"
+#ifndef __ANDROID__
 #include "stream/deko3d/DKVideoRenderer.hpp"
 #include "stream/ffmpeg/AVFrameHolder.hpp"
+#endif
 #include "stream/network_loop_policy.hpp"
 #include "stream/stream_diagnostics.hpp"
 
@@ -30,6 +32,7 @@ namespace lunanx
 namespace
 {
 
+#ifndef __ANDROID__
 // Présent pendant qu'un flux NVDEC est actif : s'il reste après un plantage, le
 // prochain lancement passe automatiquement en décodage logiciel.
 std::string NvdecMarkerPath()
@@ -52,6 +55,8 @@ void CreateNvdecMarker()
     std::ofstream marker(NvdecMarkerPath(), std::ios::trunc);
     marker << "NVDEC actif\n";
 }
+
+#endif
 
 LunaStreamSession* Self(void* userdata)
 {
@@ -93,17 +98,36 @@ void on_rtp_sender_report_cb(uint32_t ssrc, uint64_t ntp_us, uint32_t rtp_timest
 
 } // namespace
 
-LunaStreamSession::LunaStreamSession(std::shared_ptr<const luna::LunaClient> client, luna::Game game)
+LunaStreamSession::LunaStreamSession(std::shared_ptr<const luna::LunaClient> client, luna::Game game
+#ifdef __ANDROID__
+                                     , ANativeWindow* window, bool prefer_pt_br
+#endif
+)
     : client_(std::move(client)),
       game_(std::move(game)),
       settings_(LoadStreamSettings())
 {
     SetStreamDiagnosticsEnabled(settings_.debug_diagnostics);
     peer_init();
+#ifndef __ANDROID__
     renderer_ = std::make_unique<DKVideoRenderer>();
+#endif
     audio_ = std::make_unique<AudioPipeline>();
     audio_->configure(settings_.audio_volume, settings_.audio_buffer_ms);
+#ifdef __ANDROID__
+    if (prefer_pt_br)
+        launch_locale_ = "pt_BR";
+    decoder_ = std::make_unique<AndroidVideoDecoder>(
+        window, settings_.width, settings_.height, settings_.fps, [this] {
+            std::lock_guard lock(decoder_queue_mutex_);
+            decoder_queue_cv_.notify_one();
+        });
+    video_backend_name_ = "Android MediaCodec (assíncrono)";
+    rendered_width_.store(settings_.width);
+    rendered_height_.store(settings_.height);
+#else
     setup_video_decoder();
+#endif
 }
 
 LunaStreamSession::~LunaStreamSession()
@@ -112,6 +136,7 @@ LunaStreamSession::~LunaStreamSession()
     peer_deinit();
 }
 
+#ifndef __ANDROID__
 void LunaStreamSession::setup_video_decoder()
 {
     const bool previous_crash = settings_.video_backend == "Auto" && ConsumeNvdecCrashMarker();
@@ -144,6 +169,8 @@ void LunaStreamSession::setup_video_decoder()
         CreateNvdecMarker();
 }
 
+#endif
+
 bool LunaStreamSession::setup_peer_connection()
 {
     PeerConfiguration config = {};
@@ -169,6 +196,13 @@ bool LunaStreamSession::setup_peer_connection()
 
 void LunaStreamSession::start()
 {
+#ifdef __ANDROID__
+    if (!decoder_ || !decoder_->ready())
+    {
+        fail("Não foi possível iniciar o decodificador H.264 do Android.");
+        return;
+    }
+#endif
     ResetStreamLog();
     AppendStreamLog("SESSION start game=" + game_.title + " preset=" + settings_.label +
                     " decoder=" + video_backend_name_);
@@ -261,7 +295,11 @@ void LunaStreamSession::signaling_loop()
         set_status(Tr("Réservation d'une machine Luna…"));
         phase_.store(Phase::WaitingForServer);
         const std::string job_id = client_->CreateGameSessionJob(
-            game_, offer, input::LunaInputEncoder::RequestedChannels(), regions, settings_.region);
+            game_, offer, input::LunaInputEncoder::RequestedChannels(), regions, settings_.region
+#ifdef __ANDROID__
+            , launch_locale_
+#endif
+        );
         AppendStreamLog("JOB " + job_id);
 
         if (!sleep_unless_stopped(std::chrono::milliseconds(1500)))
@@ -370,15 +408,20 @@ void LunaStreamSession::poll()
         }
         open_datachannels();
         maybe_send_ping();
-        if (frames_decoded_.load() > 0 && phase() != Phase::Streaming)
+        if (frames_decoded_.load() > 0 && phase() == Phase::Connecting)
         {
             phase_.store(Phase::Streaming);
             set_status(Tr("En jeu"));
         }
-        if (keyframe_needed_.exchange(false) && decoder_resync_required_.load())
-            request_keyframe("decoder_resync");
-        maybe_recover_rtp_damage();
-        maybe_recover_decode_stall();
+#ifdef __ANDROID__
+        if (video_surface_attached_.load())
+#endif
+        {
+            if (keyframe_needed_.exchange(false) && decoder_resync_required_.load())
+                request_keyframe("decoder_resync");
+            maybe_recover_rtp_damage();
+            maybe_recover_decode_stall();
+        }
     }
     else if (state == PEER_CONNECTION_FAILED || state == PEER_CONNECTION_CLOSED ||
              state == PEER_CONNECTION_DISCONNECTED)
@@ -580,8 +623,11 @@ void LunaStreamSession::request_stop()
         return;
     stop_cv_.notify_all();
     network_running_.store(false);
-    decoder_running_.store(false);
-    decoder_queue_cv_.notify_all();
+    {
+        std::lock_guard lock(decoder_queue_mutex_);
+        decoder_running_.store(false);
+        decoder_queue_cv_.notify_all();
+    }
 }
 
 void LunaStreamSession::stop()
@@ -611,14 +657,20 @@ void LunaStreamSession::stop()
         pc_ = nullptr;
     }
     // Les surfaces deko3d référencent la mémoire NVDEC : libérer le rendu avant le décodeur.
+#ifndef __ANDROID__
     renderer_.reset();
+#endif
     if (decoder_)
     {
+#ifndef __ANDROID__
         const bool hardware = decoder_->uses_hardware_frames();
+#endif
         decoder_->cleanup();
         decoder_.reset();
+#ifndef __ANDROID__
         if (hardware)
             std::remove(NvdecMarkerPath().c_str());
+#endif
         AppendStreamLog("SESSION stopped packets=" + std::to_string(packets_received_.load()) +
                         " frames=" + std::to_string(frames_decoded_.load()) +
                         " gamepadReports=" + std::to_string(gamepad_reports_sent_.load()));
@@ -627,6 +679,98 @@ void LunaStreamSession::stop()
 
 void LunaStreamSession::decoder_loop()
 {
+#ifdef __ANDROID__
+    unsigned resets_without_output = 0;
+    uint64_t previous_generation = 0;
+    for (;;)
+    {
+        DecodeUnit unit;
+        uint64_t generation;
+        bool reset_requested;
+        AndroidVideoDecoder::Signals signals {};
+        {
+            std::unique_lock lock(decoder_queue_mutex_);
+            decoder_queue_cv_.wait(lock, [&] {
+                if (!decoder_running_.load())
+                    return true;
+                if (!video_surface_attached_.load())
+                    return false;
+                signals = decoder_->signals();
+                return signals.output || signals.error || decoder_reset_requested_.load() ||
+                    (signals.input && !decoder_queue_.empty());
+            });
+            if (!decoder_running_.load())
+                break;
+
+            generation = video_surface_generation_.load();
+            reset_requested = decoder_reset_requested_.exchange(false);
+            if (!reset_requested && !signals.error && signals.input && !decoder_queue_.empty())
+            {
+                unit = std::move(decoder_queue_.front());
+                decoder_queue_.pop_front();
+            }
+        }
+
+        if (!video_surface_attached_.load() || generation != video_surface_generation_.load())
+            continue;
+        if (generation != previous_generation)
+        {
+            previous_generation = generation;
+            resets_without_output = 0;
+        }
+
+        const int decoded = !reset_requested && !signals.error && signals.output
+            ? decoder_->drain_output(generation) : 0;
+        const bool codec_error = signals.error || decoded < 0 ||
+            (!unit.data.empty() && !decoder_->submit_decode_unit(
+                unit.data.data(), static_cast<int>(unit.data.size()), unit.rtp_timestamp, generation));
+
+        if (generation != video_surface_generation_.load())
+            continue;
+        if (decoded > 0)
+        {
+            last_decoded_frame_at_us_.store(NowUs(), std::memory_order_release);
+            presented_frames_.fetch_add(decoded, std::memory_order_relaxed);
+            if (frames_decoded_.fetch_add(decoded) == 0)
+                AppendStreamLog("DECODE first_frame");
+            resets_without_output = 0;
+        }
+
+        if (codec_error || reset_requested)
+        {
+            {
+                std::lock_guard lock(decoder_queue_mutex_);
+                if (generation != video_surface_generation_.load())
+                    continue;
+                decoder_queue_drops_ += static_cast<int>(decoder_queue_.size());
+                clear_decoder_queue_locked();
+                decoder_resync_required_.store(true);
+            }
+            if (codec_error)
+            {
+                ++decode_errors_;
+                ++codec_resets_;
+            }
+            ++decoder_resets_;
+            const bool recovered = ++resets_without_output <= 3 && decoder_->reset_stream(generation);
+            if (generation != video_surface_generation_.load())
+                continue;
+            if (!recovered)
+            {
+                request_stop();
+                fail("Não foi possível recuperar o decodificador de vídeo.");
+                break;
+            }
+            keyframe_needed_.store(true);
+        }
+
+        if (!unit.data.empty())
+        {
+            std::lock_guard lock(decoder_queue_mutex_);
+            recycle_decode_buffer_locked(std::move(unit.data));
+        }
+    }
+#else
     for (;;)
     {
         DecodeUnit unit;
@@ -670,6 +814,7 @@ void LunaStreamSession::decoder_loop()
         std::lock_guard<std::mutex> lock(decoder_queue_mutex_);
         recycle_decode_buffer_locked(std::move(unit.data));
     }
+#endif
 }
 
 void LunaStreamSession::recycle_decode_buffer_locked(std::vector<uint8_t>&& buffer)
@@ -698,6 +843,10 @@ void LunaStreamSession::enqueue_decode_unit(const uint8_t* data, size_t size, ui
 
     const bool idr = ContainsH264Idr(data, size);
     std::lock_guard<std::mutex> lock(decoder_queue_mutex_);
+#ifdef __ANDROID__
+    if (!video_surface_attached_.load())
+        return;
+#endif
     if (decoder_resync_required_.load() && !idr)
     {
         decoder_queue_drops_++;
@@ -707,13 +856,22 @@ void LunaStreamSession::enqueue_decode_unit(const uint8_t* data, size_t size, ui
 
     // File bornée (~67 ms) : au-delà, on repart de la prochaine image clé plutôt
     // que d'accumuler de la latence visible.
-    if (decoder_queue_.size() >= video::MaximumQueuedAccessUnits(settings_.fps))
+    const auto queue_capacity = video::MaximumQueuedAccessUnits(settings_.fps);
+#ifdef __ANDROID__
+    if (decoder_queue_.size() >= queue_capacity + 3)
+#else
+    if (decoder_queue_.size() >= queue_capacity)
+#endif
     {
         decoder_queue_drops_ += static_cast<int>(decoder_queue_.size());
         clear_decoder_queue_locked();
         decoder_resync_required_.store(true);
+#ifdef __ANDROID__
+        ++queue_recoveries_;
+#else
         if (!decoder_ || !decoder_->uses_hardware_frames())
             decoder_reset_requested_.store(true);
+#endif
         keyframe_needed_.store(true);
         if (!idr)
             return;
@@ -727,6 +885,13 @@ void LunaStreamSession::enqueue_decode_unit(const uint8_t* data, size_t size, ui
     }
     buffer.assign(data, data + size);
     decoder_queue_.push_back({std::move(buffer), idr, rtp_timestamp, std::chrono::steady_clock::now()});
+#ifdef __ANDROID__
+    if (idr)
+    {
+        decoder_resync_required_.store(false);
+        keyframe_needed_.store(false);
+    }
+#endif
     decoder_queue_cv_.notify_one();
 }
 
@@ -757,8 +922,13 @@ void LunaStreamSession::maybe_recover_decode_stall()
     if (!pc_ || frames_decoded_.load() == 0 || last_decoded == 0)
         return;
     const uint64_t now_us = NowUs();
-    if (now_us < last_decoded || (now_us - last_decoded) / 1000 < 1500)
+    if (now_us < last_decoded || now_us - last_decoded < 1'500'000)
         return;
+#ifdef __ANDROID__
+    if (last_video_arrival_us_ <= last_decoded || now_us - last_video_arrival_us_ > 250'000 ||
+        now_us - video_run_start_us_ < 500'000)
+        return;
+#endif
     const auto now = std::chrono::steady_clock::now();
     if (last_decode_stall_request_at_.time_since_epoch().count() != 0 &&
         now - last_decode_stall_request_at_ < std::chrono::seconds(2))
@@ -767,20 +937,35 @@ void LunaStreamSession::maybe_recover_decode_stall()
     {
         std::lock_guard<std::mutex> lock(decoder_queue_mutex_);
         clear_decoder_queue_locked();
+#ifdef __ANDROID__
+        decoder_resync_required_.store(true);
+        decoder_reset_requested_.store(true);
+        decoder_queue_cv_.notify_one();
+#endif
     }
+#ifndef __ANDROID__
     decoder_resync_required_.store(true);
     if (!decoder_ || !decoder_->uses_hardware_frames())
         decoder_reset_requested_.store(true);
+#endif
     request_keyframe("decode_stall");
 }
 
 void LunaStreamSession::maybe_recover_rtp_damage()
 {
     PeerVideoRtpStats stats {};
-    if (!pc_ || peer_connection_get_video_rtp_stats(pc_, &stats) != 0 ||
-        stats.access_units_dropped <= last_rtp_access_units_dropped_)
+    if (!pc_ || peer_connection_get_video_rtp_stats(pc_, &stats) != 0)
+        return;
+#ifdef __ANDROID__
+    auto previous = last_rtp_damage_gate_.load();
+    if (stats.access_units_dropped <= previous ||
+        !last_rtp_damage_gate_.compare_exchange_strong(previous, stats.access_units_dropped))
+        return;
+#else
+    if (stats.access_units_dropped <= last_rtp_access_units_dropped_)
         return;
     last_rtp_access_units_dropped_ = stats.access_units_dropped;
+#endif
     // Une image de référence manque : on ignore les P suivantes jusqu'à la prochaine IDR.
     if (!decoder_resync_required_.exchange(true))
         keyframe_needed_.store(true);
@@ -789,6 +974,28 @@ void LunaStreamSession::maybe_recover_rtp_damage()
 void LunaStreamSession::on_video_packet(const PeerVideoPacket& packet)
 {
     received_media_bytes_.fetch_add(packet.size, std::memory_order_relaxed);
+#ifdef __ANDROID__
+    const auto arrival_us = NowUs();
+    const auto arrival_gap = arrival_us - last_video_arrival_us_;
+    if (!last_video_arrival_us_ || arrival_gap > 250'000 || video_ssrc_ != packet.ssrc)
+    {
+        video_run_start_us_ = arrival_us;
+        arrival_jitter_us_ = 0;
+    }
+    else
+    {
+        const auto ticks = static_cast<int32_t>(packet.timestamp - last_video_rtp_timestamp_);
+        if (ticks > 0)
+        {
+            const auto media_gap = static_cast<int64_t>(ticks) * 100 / 9;
+            const auto delta = static_cast<int64_t>(arrival_gap) - media_gap;
+            arrival_jitter_us_ += ((delta < 0 ? -delta : delta) - arrival_jitter_us_) / 16;
+        }
+    }
+    ++video_received_;
+    last_video_arrival_us_ = arrival_us;
+    last_video_rtp_timestamp_ = packet.timestamp;
+#endif
     PeerVideoRtpStats stats {};
     if (pc_ && peer_connection_get_video_rtp_stats(pc_, &stats) == 0)
     {
@@ -851,6 +1058,7 @@ void LunaStreamSession::on_rtp_sender_report(uint32_t ssrc, uint64_t ntp_us, uin
     }
 }
 
+#ifndef __ANDROID__
 int64_t LunaStreamSession::video_target_rtp_timestamp() const
 {
     std::lock_guard<std::recursive_mutex> lock(peer_mutex_);
@@ -878,10 +1086,55 @@ void LunaStreamSession::draw(NVGcontext* vg, int width, int height, AVFrame* fra
     }
 }
 
+#endif
+
 StreamCounters LunaStreamSession::stream_counters() const
 {
     return {received_media_bytes_.load(std::memory_order_relaxed), presented_frames_.load(std::memory_order_relaxed)};
 }
+
+#ifdef __ANDROID__
+bool LunaStreamSession::set_android_surface(ANativeWindow* window)
+{
+    if (!decoder_ || !decoder_running_.load())
+        return !window;
+    video_surface_attached_.store(false);
+    const auto generation = ++video_surface_generation_;
+    {
+        std::lock_guard<std::mutex> lock(decoder_queue_mutex_);
+        clear_decoder_queue_locked();
+    }
+    const bool ready = decoder_->set_output_window(window, generation);
+    if (window && ready)
+    {
+        decoder_reset_requested_.store(false);
+        decoder_resync_required_.store(true);
+        last_decoded_frame_at_us_.store(NowUs(), std::memory_order_release);
+        keyframe_needed_.store(true);
+        std::lock_guard lock(decoder_queue_mutex_);
+        video_surface_attached_.store(true);
+        decoder_queue_cv_.notify_one();
+    }
+    return ready;
+}
+
+LunaStreamSession::AndroidVideoStats LunaStreamSession::android_video_stats()
+{
+    std::lock_guard<std::recursive_mutex> peer_lock(peer_mutex_);
+    PeerVideoRtpStats rtp {};
+    if (pc_)
+        peer_connection_get_video_rtp_stats(pc_, &rtp);
+    std::lock_guard<std::mutex> queue_lock(decoder_queue_mutex_);
+    uint64_t queue_ms = 0;
+    if (!decoder_queue_.empty())
+        queue_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - decoder_queue_.front().enqueued_at).count();
+    return {video_received_, static_cast<uint64_t>(frames_decoded_.load()),
+            static_cast<uint64_t>(rtp.access_units_dropped), decoder_resets_.load(),
+            codec_resets_.load(), queue_recoveries_.load(), queue_ms,
+            static_cast<uint64_t>(arrival_jitter_us_ / 1000)};
+}
+#endif
 
 std::string LunaStreamSession::status_text() const
 {

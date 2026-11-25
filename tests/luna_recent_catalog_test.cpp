@@ -15,6 +15,7 @@ using namespace lunanx;
 using namespace lunanx::luna;
 const AmazonMarket* market;
 std::string locale;
+std::string expected_launch_locale;
 std::string title = "任意の履歴見出し";
 bool by_id = false, icon_only = false, empty = false, fail = false, fail_home = false;
 bool navigation_without_history = false;
@@ -84,11 +85,14 @@ HttpResponse HttpClient::Post(const std::string& url, const std::string&,
 {
     assert(Header(headers, "Origin: https://luna.amazon." + market->domain));
     assert(Header(headers, "x-amz-country-of-residence: " + market->country));
-    assert(Header(headers, "x-amz-locale: " + locale));
     const std::string proxy = market->country == "US" || market->country == "CA"
         ? "https://proxy-prod.tempo.digital.a2z.com/" : "https://proxy-prod.eu-west-1.tempo.digital.a2z.com/";
     assert(url.starts_with(proxy));
     const std::string operation = url.substr(proxy.size());
+    const std::string& request_locale =
+        operation == "createGameSessionJob" && !expected_launch_locale.empty()
+            ? expected_launch_locale : locale;
+    assert(Header(headers, "x-amz-locale: " + request_locale));
     json_t* request = json_loads(body.c_str(), 0, nullptr);
     assert(request);
     if (operation == "getAppConfig")
@@ -112,6 +116,12 @@ HttpResponse HttpClient::Post(const std::string& url, const std::string&,
     // Personalized history must carry the active Luna profile on both API calls.
     assert(Header(headers, "x-amz-profile-token: test-profile-token"));
     assert(Header(headers, "x-amz-access-token: test-access"));
+    if (operation == "createGameSessionJob")
+    {
+        assert(std::string(json_string_value(json_object_get(request, "gameId"))) == "test-game-1");
+        json_decref(request);
+        return {200, R"({"gameSessionJobId":"test-job"})", {}};
+    }
     if (operation == "getPage")
     {
         const char* service = json_string_value(json_object_get(request, "serviceToken"));
@@ -254,6 +264,14 @@ int main()
             assert(games.size() == 2);
             ++languages_tested;
         }
+        Game launch;
+        launch.game_id = "test-game-1";
+        launch.play_token = "test-play-token";
+        assert(client.CreateGameSessionJob(launch, "test-sdp", {}, {}, "Auto") == "test-job");
+        expected_launch_locale = "pt_BR";
+        assert(client.CreateGameSessionJob(launch, "test-sdp", {}, {}, "Auto", "pt_BR") == "test-job");
+        expected_launch_locale.clear();
+        assert(client.account().locale == locale);
         ++markets_tested;
     }
     std::cout << "Personalized Luna history: " << markets_tested << " markets, " << languages_tested

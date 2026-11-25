@@ -83,7 +83,8 @@ class LunaClient
         const std::string& offer_sdp,
         const std::vector<std::string>& requested_channels,
         const std::vector<Region>& regions,
-        const std::string& preferred_region) const;
+        const std::string& preferred_region,
+        const std::string& launch_locale = {}) const;
     SessionJob GetGameSessionJob(const std::string& job_id) const;
 
     // Appel brut au proxy (POST JSON) ; lève LunaError en cas d'échec. Le résultat doit
@@ -115,7 +116,8 @@ class LunaClient
     mutable PlayerProfile profile_;
     mutable std::map<std::string, std::string> recent_page_contexts_;
     json_t* ClientContext() const;
-    std::vector<std::string> ProxyHeaders() const;
+    std::vector<std::string> ProxyHeaders(const std::string& locale) const;
+    json_t* CallWithLocale(const std::string& operation, json_t* body, const std::string& locale) const;
     std::string HostOf(const std::string& url) const;
 
     CookieJar cookies_;

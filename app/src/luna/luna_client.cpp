@@ -668,7 +668,7 @@ std::string LunaClient::FetchAccessToken() const
     return token;
 }
 
-std::vector<std::string> LunaClient::ProxyHeaders() const
+std::vector<std::string> LunaClient::ProxyHeaders(const std::string& locale) const
 {
     std::vector<std::string> headers = {
         "Content-Type: text/plain;charset=UTF-8",
@@ -679,7 +679,7 @@ std::vector<std::string> LunaClient::ProxyHeaders() const
         "x-amz-country-of-residence: " + account_.country,
         "x-amz-device-serial-number: " + account_.device_serial,
         "x-amz-device-type: browser",
-        "x-amz-locale: " + account_.locale,
+        "x-amz-locale: " + locale,
         "x-amz-marketplace-id: " + account_.marketplace_id,
         "x-amz-platform: web",
         "x-amz-react-version: 1.0.37245.0",
@@ -697,13 +697,19 @@ std::vector<std::string> LunaClient::ProxyHeaders() const
 
 json_t* LunaClient::Call(const std::string& operation, json_t* body) const
 {
+    return CallWithLocale(operation, body, account_.locale);
+}
+
+json_t* LunaClient::CallWithLocale(const std::string& operation, json_t* body,
+                                  const std::string& locale) const
+{
     auto owned_body = Adopt(body ? body : json_object());
     char* text = json_dumps(owned_body.get(), JSON_COMPACT);
     const std::string payload = text ? text : "{}";
     free(text);
 
     const std::string url = account_.proxy_url + "/" + operation;
-    const HttpResponse response = http_.Post(url, kBrowserUserAgent, ProxyHeaders(), payload);
+    const HttpResponse response = http_.Post(url, kBrowserUserAgent, ProxyHeaders(locale), payload);
     LogRuntimeEvent("luna", "call", operation + " status=" + std::to_string(response.status_code));
 
     if (response.status_code == 401 || response.status_code == 403)
@@ -1534,7 +1540,8 @@ std::string LunaClient::CreateGameSessionJob(
     const std::string& offer_sdp,
     const std::vector<std::string>& requested_channels,
     const std::vector<Region>& regions,
-    const std::string& preferred_region) const
+    const std::string& preferred_region,
+    const std::string& launch_locale) const
 {
     json_t* features = json_array();
     for (const auto& feature : account_.protocol_features)
@@ -1622,7 +1629,8 @@ std::string LunaClient::CreateGameSessionJob(
                             std::to_string(account_.protocol_features.size()) + " profileToken=" +
                             (account_.profile_token.empty() ? "absent" : "present"));
     }
-    auto result = Adopt(Call("createGameSessionJob", body));
+    auto result = Adopt(CallWithLocale("createGameSessionJob", body,
+                                       launch_locale.empty() ? account_.locale : launch_locale));
     const std::string job_id = Str(result.get(), "gameSessionJobId");
     if (job_id.empty())
         throw LunaError(Tr("Luna n'a pas créé de session de jeu"));

@@ -11,5 +11,8 @@ namespace lunanx
 // Dossier de travail sur la carte SD : réglages, cookies, cache, journaux.
 const std::string& AppHomePath();
 void PrepareAppStorage();
+#ifdef __ANDROID__
+void SetAndroidAppHome(std::string path);
+#endif
 
 } // namespace lunanx
