@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include "codec_queue.hpp"
 #include "video_presentation_clock.hpp"
 
 class AndroidVideoDecoder
@@ -25,6 +26,9 @@ public:
 
     bool ready() const { return started_; }
     Signals signals();
+    bool output_stalled(uint64_t now) const { return codec_queue_.stalled(now); }
+    size_t codec_pending() const { return codec_queue_.count(); }
+    uint64_t codec_age_us(uint64_t now) const { return codec_queue_.age_us(now); }
     bool submit_decode_unit(const uint8_t* data, int size, uint32_t timestamp, uint64_t generation);
     int drain_output(uint64_t generation);
     bool set_output_window(ANativeWindow* window, uint64_t generation);
@@ -52,6 +56,7 @@ private:
     const int fps_;
     const std::function<void()> wake_;
     VideoPresentationClock presentation_clock_;
+    CodecQueue codec_queue_;
     uint64_t output_generation_ = 0;
     std::unique_ptr<ANativeWindow, decltype(&ANativeWindow_release)> window_{nullptr, ANativeWindow_release};
     AMediaCodec* codec_ = nullptr;

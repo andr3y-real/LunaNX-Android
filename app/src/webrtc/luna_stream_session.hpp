@@ -83,6 +83,8 @@ class LunaStreamSession
         uint64_t queue_recoveries = 0;
         uint64_t queue_ms = 0;
         uint64_t arrival_jitter_ms = 0;
+        uint64_t codec_pending = 0;
+        uint64_t codec_age_ms = 0;
     };
     AndroidVideoStats android_video_stats();
     bool set_android_surface(ANativeWindow* window);

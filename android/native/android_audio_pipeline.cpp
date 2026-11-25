@@ -49,6 +49,7 @@ struct AudioPipeline::Impl
         if (AAudio_createStreamBuilder(&builder) == AAUDIO_OK)
         {
             AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_OUTPUT);
+            AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_GAME);
             AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
             AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_SHARED);
             AAudioStreamBuilder_setSampleRate(builder, sample_rate);

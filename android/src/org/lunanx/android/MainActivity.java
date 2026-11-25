@@ -1878,9 +1878,9 @@ public final class MainActivity extends Activity {
                             long receivedFps = Math.round((received - lastReceived) * 1000.0 / elapsed);
                             long decodedFps = Math.round((decoded - lastDecoded) * 1000.0 / elapsed);
                             metricsLabel = String.format(java.util.Locale.ROOT,
-                                "FPS entra %d / dec %d · %.1f Mb/s\nFila %s ms · var. %s ms · desc. RTP %s\nResets %s · codec %s · fila cheia %s",
+                                "FPS entra %d / dec %d · %.1f Mb/s\nFila %s ms · var. %s ms · desc. RTP %s\nResets %s · codec %s · fila cheia %s\nNo codec: %s quadros · %s ms",
                                 receivedFps, decodedFps, mbps, status[8], status[9],
-                                status[6], status[7], status[10], status[11]);
+                                status[6], status[7], status[10], status[11], status[12], status[13]);
                         }
                         sampledAt = now;
                         lastBytes = bytes;

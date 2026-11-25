@@ -918,15 +918,21 @@ void LunaStreamSession::request_keyframe(const char* reason)
 
 void LunaStreamSession::maybe_recover_decode_stall()
 {
+    if (!pc_)
+        return;
     const uint64_t last_decoded = last_decoded_frame_at_us_.load(std::memory_order_acquire);
-    if (!pc_ || frames_decoded_.load() == 0 || last_decoded == 0)
-        return;
     const uint64_t now_us = NowUs();
-    if (now_us < last_decoded || now_us - last_decoded < 1'500'000)
-        return;
+    const bool stalled = last_decoded != 0 && now_us >= last_decoded &&
+                         now_us - last_decoded >= 1'500'000;
 #ifdef __ANDROID__
-    if (last_video_arrival_us_ <= last_decoded || now_us - last_video_arrival_us_ > 250'000 ||
-        now_us - video_run_start_us_ < 500'000)
+    const bool codec_stalled = decoder_ && decoder_->output_stalled(now_us);
+    if ((!stalled && !codec_stalled) || !video_surface_attached_.load() ||
+        last_video_arrival_us_ == 0 || now_us - last_video_arrival_us_ > 250'000 ||
+        now_us - video_run_start_us_ < 500'000 ||
+        (stalled && !codec_stalled && last_video_arrival_us_ <= last_decoded))
+        return;
+#else
+    if (!stalled)
         return;
 #endif
     const auto now = std::chrono::steady_clock::now();
@@ -948,7 +954,11 @@ void LunaStreamSession::maybe_recover_decode_stall()
     if (!decoder_ || !decoder_->uses_hardware_frames())
         decoder_reset_requested_.store(true);
 #endif
+#ifdef __ANDROID__
+    request_keyframe(codec_stalled ? "codec_queue_stall" : "decode_stall");
+#else
     request_keyframe("decode_stall");
+#endif
 }
 
 void LunaStreamSession::maybe_recover_rtp_damage()
@@ -1132,7 +1142,9 @@ LunaStreamSession::AndroidVideoStats LunaStreamSession::android_video_stats()
     return {video_received_, static_cast<uint64_t>(frames_decoded_.load()),
             static_cast<uint64_t>(rtp.access_units_dropped), decoder_resets_.load(),
             codec_resets_.load(), queue_recoveries_.load(), queue_ms,
-            static_cast<uint64_t>(arrival_jitter_us_ / 1000)};
+            static_cast<uint64_t>(arrival_jitter_us_ / 1000),
+            decoder_ ? decoder_->codec_pending() : 0,
+            decoder_ ? decoder_->codec_age_us(NowUs()) / 1000 : 0};
 }
 #endif
 

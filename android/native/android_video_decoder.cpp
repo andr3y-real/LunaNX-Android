@@ -7,9 +7,16 @@
 
 using Clock = std::chrono::steady_clock;
 
+static uint64_t monotonic_us()
+{
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        Clock::now().time_since_epoch()).count();
+}
+
 AndroidVideoDecoder::AndroidVideoDecoder(ANativeWindow* window, int width, int height, int fps,
                                          std::function<void()> wake)
-    : width_(width), height_(height), fps_(fps), wake_(std::move(wake)), presentation_clock_(fps)
+    : width_(width), height_(height), fps_(fps), wake_(std::move(wake)), presentation_clock_(fps),
+      codec_queue_(fps)
 {
     set_output_window(window, 0);
 }
@@ -35,6 +42,7 @@ bool AndroidVideoDecoder::open()
         AMediaFormat_setInt32(format.get(), "max-input-size", 2 * 1024 * 1024);
         AMediaFormat_setInt32(format.get(), "low-latency", 1);
         AMediaFormat_setInt32(format.get(), "priority", 0);
+        AMediaFormat_setInt32(format.get(), "allow-frame-drop", 1);
         AMediaFormat_setFloat(format.get(), "operating-rate", static_cast<float>(fps_));
         {
             std::lock_guard lock(callback_mutex_);
@@ -131,6 +139,7 @@ int AndroidVideoDecoder::drain_output(uint64_t generation)
         const auto when_ns = presentation_clock_.schedule(output.info.presentationTimeUs * 1000, now_ns);
         if (AMediaCodec_releaseOutputBufferAtTime(codec_, output.index, when_ns) != AMEDIA_OK)
             return -1;
+        codec_queue_.produced(output.info.presentationTimeUs, monotonic_us());
         ++frames;
     }
     return frames;
@@ -140,7 +149,8 @@ bool AndroidVideoDecoder::submit_decode_unit(
     const uint8_t* data, int size, uint32_t timestamp, uint64_t generation)
 {
     std::lock_guard lock(mutex_);
-    if (!started_ || generation != output_generation_)
+    if (!started_ || generation != output_generation_ || size <= 0 ||
+        !codec_queue_.can_submit(static_cast<size_t>(size)))
         return false;
 
     int32_t index;
@@ -162,7 +172,10 @@ bool AndroidVideoDecoder::submit_decode_unit(
     have_timestamp_ = true;
     std::memcpy(buffer, data, size);
     const auto timestamp_us = presentation_ticks_ > 0 ? presentation_ticks_ * 100 / 9 : 0;
-    return AMediaCodec_queueInputBuffer(codec_, index, 0, size, timestamp_us, 0) == AMEDIA_OK;
+    if (AMediaCodec_queueInputBuffer(codec_, index, 0, size, timestamp_us, 0) != AMEDIA_OK)
+        return false;
+    codec_queue_.submitted(timestamp_us, static_cast<size_t>(size), monotonic_us());
+    return true;
 }
 
 bool AndroidVideoDecoder::set_output_window(ANativeWindow* window, uint64_t generation)
@@ -213,4 +226,5 @@ void AndroidVideoDecoder::close_locked()
     have_timestamp_ = false;
     presentation_ticks_ = 0;
     presentation_clock_.reset();
+    codec_queue_.reset();
 }
