@@ -73,6 +73,14 @@ class LunaStreamSession
     std::string debug_text() const;
     StreamCounters stream_counters() const;
 #ifdef __ANDROID__
+    struct LaunchQueueStatus
+    {
+        bool queued = false;
+        int position = -1;
+        int wait_seconds = -1;
+    };
+    LaunchQueueStatus launch_queue_status() const;
+
     struct AndroidVideoStats
     {
         uint64_t received = 0;
@@ -154,6 +162,9 @@ class LunaStreamSession
     std::string status_ = Tr("Préparation…");
     std::string failure_;
     std::string server_region_;
+#ifdef __ANDROID__
+    LaunchQueueStatus launch_queue_status_;
+#endif
 
     PeerConnection* pc_ = nullptr;
     mutable std::recursive_mutex peer_mutex_;

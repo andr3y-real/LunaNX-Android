@@ -313,9 +313,15 @@ void LunaStreamSession::signaling_loop()
                             " wait_s=" + std::to_string(job.expected_wait_seconds));
             if (job.status != luna::SessionJobStatus::Pending)
                 break;
-            set_status(job.raw_status.find("QUEUE") != std::string::npos
-                ? QueueStatusText(job)
-                : Tr("Démarrage de la machine distante…"));
+            const bool queued = job.raw_status.find("QUEUE") != std::string::npos ||
+                job.position_in_line > 0;
+            {
+                std::lock_guard<std::mutex> lock(status_mutex_);
+                status_ = queued ? QueueStatusText(job) : Tr("Démarrage de la machine distante…");
+#ifdef __ANDROID__
+                launch_queue_status_ = {queued, job.position_in_line, job.expected_wait_seconds};
+#endif
+            }
             if (std::chrono::steady_clock::now() > deadline)
                 throw luna::LunaError(Tr("Le serveur Luna ne répond pas (délai dépassé)"));
             if (!sleep_unless_stopped(std::chrono::milliseconds(std::clamp(job.retry_after_ms, 500, 5000))))
@@ -1157,6 +1163,14 @@ LunaStreamSession::AndroidVideoStats LunaStreamSession::android_video_stats()
             decoder_ ? decoder_->peak_codec_delay_us() / 1000 : 0,
             rtp.non_picture_access_units, waiting_for_keyframe_drops_,
             rtp.reorder_gap_recoveries, rtp.reorder_gap_expirations};
+}
+#endif
+
+#ifdef __ANDROID__
+LunaStreamSession::LaunchQueueStatus LunaStreamSession::launch_queue_status() const
+{
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    return launch_queue_status_;
 }
 #endif
 

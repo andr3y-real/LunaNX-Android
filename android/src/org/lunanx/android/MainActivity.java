@@ -101,6 +101,8 @@ public final class MainActivity extends Activity {
     private static final int RECENT_GAMES = 2;
     private static final int PREMIUM_GAMES = 3;
     private static final String[] SECTIONS = {"Todos", "Top 10", "Continuar", "Premium"};
+    private static final int WAITING_FOR_SERVER = 1;
+    private static final int CONNECTING = 2;
     private static final int STREAMING = 3;
     private static final int ENDED = 4;
 
@@ -143,6 +145,12 @@ public final class MainActivity extends Activity {
     private boolean catalogRefreshPending;
     private TextView libraryStatus;
     private TextView streamStatus;
+    private LinearLayout launchPanel;
+    private TextView launchStage;
+    private TextView launchDetails;
+    private TextView leaveLaunch;
+    private ProgressBar launchProgress;
+    private boolean launching;
     private LinearLayout metrics;
     private TextView[] metricValues;
     private TextView metricDetails;
@@ -1829,6 +1837,7 @@ public final class MainActivity extends Activity {
         selectedGame = index;
         playerTitle = games[index * GAME_FIELDS];
         playbackReport = new PlaybackReport(SystemClock.elapsedRealtime());
+        launching = true;
         showMetrics = false;
         videoSurfaceError = null;
         playerFraming = PlayerFraming.fromPreference(
@@ -1912,7 +1921,8 @@ public final class MainActivity extends Activity {
             }
         });
         current.setOnTouchListener((view, event) -> gestures.onTouchEvent(event));
-        streamStatus = text("Iniciando " + playerTitle + "…", 16, Color.WHITE);
+        streamStatus = text("", 16, Color.WHITE);
+        streamStatus.setVisibility(View.GONE);
         streamStatus.setGravity(Gravity.CENTER);
         streamStatus.setPadding(dp(16), dp(8), dp(16), dp(8));
         streamStatus.setBackground(rounded(0xd91c2030, 12));
@@ -1948,7 +1958,66 @@ public final class MainActivity extends Activity {
 
         controls = touchOverlay();
         current.addView(controls, new FrameLayout.LayoutParams(-1, -1));
+        addLaunchPanel(current);
         updatePlayerOverlays();
+    }
+
+    private void addLaunchPanel(FrameLayout current) {
+        launchPanel = new LinearLayout(this);
+        launchPanel.setOrientation(LinearLayout.VERTICAL);
+        launchPanel.setPadding(dp(20), dp(16), dp(20), dp(16));
+        launchPanel.setBackground(chrome(0xff241930, 22));
+        launchPanel.addView(text(playerTitle, 14, 0xffd7c4ec));
+
+        launchStage = heading("Preparando a sessão");
+        launchStage.setTextSize(24);
+        launchStage.setPadding(0, dp(6), 0, dp(2));
+        launchPanel.addView(launchStage);
+        launchDetails = text("Solicitando uma sessão ao Luna…", 14, 0xffd7c4ec);
+        launchPanel.addView(launchDetails);
+
+        launchProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        launchProgress.setIndeterminate(true);
+        launchProgress.setIndeterminateTintList(ColorStateList.valueOf(LIBRARY_SELECTED));
+        LinearLayout.LayoutParams progress = new LinearLayout.LayoutParams(-1, dp(12));
+        progress.topMargin = dp(12);
+        progress.bottomMargin = dp(12);
+        launchPanel.addView(launchProgress, progress);
+        leaveLaunch = libraryAction("Cancelar espera", false, () -> leavePlayer(false));
+        launchPanel.addView(leaveLaunch);
+
+        int width = Math.max(1, Math.min(400, getResources().getConfiguration().screenWidthDp - 32));
+        current.addView(launchPanel, floating(dp(width), -2, Gravity.CENTER, 16));
+    }
+
+    private void showLaunchProgress(int phase, String message, boolean queued, int position, int waitSeconds) {
+        String stage;
+        String details;
+        if (phase >= ENDED) {
+            stage = "Não foi possível iniciar";
+            details = message;
+        } else if (phase == WAITING_FOR_SERVER && queued) {
+            stage = position > 0 ? "Posição " + position + " na fila" : "Aguardando na fila";
+            if (waitSeconds < 0) {
+                details = "Aguardando uma máquina disponível no Luna.";
+            } else if (waitSeconds < 60) {
+                details = "Espera estimada de menos de 1 minuto.";
+            } else {
+                long minutes = (waitSeconds + 59L) / 60;
+                details = "Espera estimada de cerca de " + minutes + (minutes == 1 ? " minuto." : " minutos.");
+            }
+        } else if (phase == CONNECTING) {
+            stage = "Conectando ao jogo";
+            details = "Aguardando os primeiros quadros do vídeo…";
+        } else {
+            stage = phase == WAITING_FOR_SERVER ? "Preparando a máquina" : "Preparando a sessão";
+            details = message;
+        }
+        if (!android.text.TextUtils.equals(launchStage.getText(), stage)) launchStage.setText(stage);
+        if (!android.text.TextUtils.equals(launchDetails.getText(), details)) launchDetails.setText(details);
+        launchProgress.setVisibility(phase < ENDED ? View.VISIBLE : View.INVISIBLE);
+        String action = phase < ENDED ? "Cancelar espera" : "Voltar à biblioteca";
+        if (!android.text.TextUtils.equals(leaveLaunch.getText(), action)) leaveLaunch.setText(action);
     }
 
     private void updateFraming() {
@@ -1982,7 +2051,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showPlayerMenu() {
-        if (player == null || playerMenu != null) return;
+        if (player == null || launching || playerMenu != null) return;
         resetPad();
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -2076,11 +2145,11 @@ public final class MainActivity extends Activity {
 
     private void updatePlayerOverlays() {
         if (controls == null || player == null) return;
-        boolean showTouch = !gamepadConnected && touchControls;
+        boolean showTouch = !launching && !gamepadConnected && touchControls;
         controls.setVisibility(showTouch ? View.VISIBLE : View.GONE);
         if (!showTouch) resetTouchPad();
-        playerMenuButton.setVisibility(gamepadConnected ? View.GONE : View.VISIBLE);
-        metrics.setVisibility(showMetrics ? View.VISIBLE : View.GONE);
+        playerMenuButton.setVisibility(launching || gamepadConnected ? View.GONE : View.VISIBLE);
+        metrics.setVisibility(!launching && showMetrics ? View.VISIBLE : View.GONE);
     }
 
     private static boolean isGamepad(InputDevice device) {
@@ -2141,8 +2210,12 @@ public final class MainActivity extends Activity {
             post(token, () -> {
                 if (revision != surfaceRevision) return;
                 videoSurfaceError = "A partida continua, mas o Android não liberou a tela do vídeo.";
-                streamStatus.setText(videoSurfaceError);
-                streamStatus.setVisibility(View.VISIBLE);
+                if (launching) {
+                    showLaunchProgress(ENDED, videoSurfaceError, false, -1, -1);
+                } else {
+                    streamStatus.setText(videoSurfaceError);
+                    streamStatus.setVisibility(View.VISIBLE);
+                }
             });
         }
     }
@@ -2202,6 +2275,19 @@ public final class MainActivity extends Activity {
                         lastDecoded = decoded;
                     }
                     post(token, () -> {
+                        if (launching && phase != STREAMING) {
+                            if (videoSurfaceError != null && phase < ENDED)
+                                showLaunchProgress(ENDED, videoSurfaceError, false, -1, -1);
+                            else
+                                showLaunchProgress(phase, status[1], "1".equals(status[18]),
+                                    Integer.parseInt(status[19]), Integer.parseInt(status[20]));
+                            return;
+                        }
+                        if (launching) {
+                            launching = false;
+                            launchPanel.setVisibility(View.GONE);
+                            updatePlayerOverlays();
+                        }
                         boolean showSurfaceError = phase < ENDED && videoSurfaceError != null;
                         boolean showStatus = phase != STREAMING || showSurfaceError;
                         int visibility = showStatus ? View.VISIBLE : View.GONE;
@@ -2218,13 +2304,17 @@ public final class MainActivity extends Activity {
                 }
             }, 0, 16, TimeUnit.MILLISECONDS);
         } catch (Exception error) {
-            post(token, () -> streamStatus.setText(message(error)));
+            post(token, () -> showLaunchProgress(ENDED, message(error), false, -1, -1));
         }
     }
 
     private void leavePlayer() {
+        leavePlayer(!launching);
+    }
+
+    private void leavePlayer(boolean showReport) {
         if (player == null) return;
-        PlaybackReport report = playbackReport;
+        PlaybackReport report = showReport ? playbackReport : null;
         ++operation;
         player = null;
         if (playerMenu != null) playerMenu.dismiss();
@@ -2584,6 +2674,10 @@ public final class MainActivity extends Activity {
             }
             boolean pressed = event.getAction() == KeyEvent.ACTION_DOWN;
             int key = event.getKeyCode();
+            if (launching && key == KeyEvent.KEYCODE_BUTTON_B) {
+                if (!pressed) leavePlayer(false);
+                return true;
+            }
             int mask = buttonMask(key);
             if (mask != 0) {
                 if (pressed) padButtons |= mask;
@@ -2741,8 +2835,10 @@ public final class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
-        if (player != null) showPlayerMenu();
-        else if (authenticating) cancelSignIn();
+        if (player != null) {
+            if (launching) leavePlayer(false);
+            else showPlayerMenu();
+        } else if (authenticating) cancelSignIn();
         else if (libraryVisible && settingsScreen) openHome();
         else if (libraryVisible && inlineSearch) {
             inlineSearch = false;
