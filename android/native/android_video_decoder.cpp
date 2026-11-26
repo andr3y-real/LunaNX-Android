@@ -282,12 +282,13 @@ AndroidVideoDecoder::OutputProgress AndroidVideoDecoder::drain_output(uint64_t g
         const auto when_ns = stale ? std::nullopt : render_times[i - first];
         if (!when_ns && i + 1 == pictures)
         {
-            // Keep one picture when the next Surface slot is still too far
-            // ahead. Newer output can replace it before the timed wake.
-            deferred_output_ = output;
-            const auto retry_ns = presentation_clock_.retry_at_ns();
-            presentation_retry_us_.store((retry_ns + 999) / 1000, std::memory_order_relaxed);
-            break;
+            const auto retry_ns = presentation_clock_.retry_at_ns(timing(i), now_ns);
+            if (retry_ns)
+            {
+                deferred_output_ = output;
+                presentation_retry_us_.store((*retry_ns + 999) / 1000, std::memory_order_relaxed);
+                break;
+            }
         }
 
         const auto released = when_ns

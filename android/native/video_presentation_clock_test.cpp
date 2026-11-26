@@ -27,15 +27,33 @@ int main()
     assert(clock.schedule({frame, start}, start));
     const int64_t wake = start + frame / 2;
     const auto batch = clock.schedule_pair({2 * frame, start}, {3 * frame, start}, wake);
-    assert(!batch[0] && batch[1] == start + 2 * frame);
+    assert(!batch[0] && batch[1] && *batch[1] <= start + 2 * frame);
+
     const VideoPresentationClock::Picture waiting {4 * frame, wake};
     assert(!clock.schedule(waiting, wake));
-    const auto retry = clock.retry_at_ns();
-    assert(retry > wake && retry - wake < frame);
-    assert(!clock.schedule(waiting, retry - 1));
-    assert(clock.schedule(waiting, retry) == start + 3 * frame);
-    const auto resumed = clock.schedule({5 * frame, start + 2'000'000'000}, start + 2'000'000'000);
+    assert(!clock.retry_at_ns(waiting, wake));
+
+    // A fresh picture can wait for a nearby slot. A picture received earlier
+    // cannot extend its wait by arriving late at the worker.
+    const int64_t next_slot = *batch[1] + frame - frame / 16;
+    const int64_t eligible_at = next_slot - frame * 7 / 4;
+    const int64_t ready = eligible_at - 2'000'000;
+    const VideoPresentationClock::Picture fresh {5 * frame, ready};
+    assert(!clock.schedule(fresh, ready));
+    assert(clock.retry_at_ns(fresh, ready) == eligible_at);
+    assert(!clock.retry_at_ns(waiting, ready));
+    assert(clock.schedule(fresh, eligible_at) == next_slot);
+    const auto resumed = clock.schedule({6 * frame, start + 2'000'000'000}, start + 2'000'000'000);
     assert(resumed == start + 2'000'000'000 && clock.reserve_ns() == 0);
+
+    // Once the previous picture is already queued, a jitter spike should
+    // not add another entire frame period of lead.
+    clock.reset();
+    assert(clock.schedule({0, start}, start) == start);
+    assert(clock.schedule({frame, start}, start) == start + frame);
+    const int64_t arriving = start + frame - 1'000'000;
+    const auto caught_up = clock.schedule({2 * frame, arriving}, arriving);
+    assert(caught_up == start + 2 * frame);
 
     // Both stream profiles absorb recurring jitter within two frame periods.
     for (const int fps : {30, 60})
@@ -53,7 +71,7 @@ int main()
             const auto scheduled = noisy.schedule({media, ready}, ready);
             if (scheduled)
             {
-                const int64_t minimum_spacing = fps > 30 ? interval : interval * 7 / 8;
+                const int64_t minimum_spacing = fps > 30 ? interval - interval / 16 : interval * 7 / 8;
                 assert(*scheduled >= previous + minimum_spacing);
                 assert(*scheduled >= ready && *scheduled <= ready + 2 * interval);
                 previous = *scheduled;
