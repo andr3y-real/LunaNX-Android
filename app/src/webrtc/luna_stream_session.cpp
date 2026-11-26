@@ -11,7 +11,6 @@ LUNANX_SOURCE_ORIGIN(u86d0cb31882f7e48e9fb, "86d0cb31882f7e48e9fb")
 #include "input/luna_client_messages.hpp"
 #include "internal.hpp"
 #include "luna/luna_sdp.hpp"
-#include "stream/DecodeQueuePolicy.hpp"
 #include "stream/audio/AudioRtpUtils.hpp"
 #ifndef __ANDROID__
 #include "stream/deko3d/DKVideoRenderer.hpp"
@@ -831,6 +830,13 @@ void LunaStreamSession::decoder_loop()
                 }
                 {
                     std::lock_guard lock(decoder_queue_mutex_);
+                    if (status == AndroidVideoDecoder::SubmitStatus::Submitted &&
+                        generation == video_surface_generation_.load() && video_surface_attached_.load())
+                    {
+                        last_codec_input_us_ = NowUs();
+                        if (unit.idr)
+                            last_codec_idr_input_us_ = last_codec_input_us_;
+                    }
                     recycle_decode_buffer_locked(std::move(unit.data));
                 }
                 if (status == AndroidVideoDecoder::SubmitStatus::Error)
@@ -851,6 +857,9 @@ void LunaStreamSession::decoder_loop()
                 std::lock_guard lock(decoder_queue_mutex_);
                 if (generation != video_surface_generation_.load())
                     continue;
+                codec_recovery_.reset();
+                last_codec_input_us_ = 0;
+                last_codec_idr_input_us_ = 0;
                 const auto skip = video::PicturesBeforeNewestKeyframe(decoder_queue_);
                 decoder_queue_drops_ += static_cast<int>(skip);
                 discard_decode_prefix_locked(skip);
@@ -1095,52 +1104,51 @@ void LunaStreamSession::maybe_recover_decode_stall()
 {
     if (!pc_)
         return;
-    const uint64_t last_decoded = last_decoded_frame_at_us_.load(std::memory_order_acquire);
-    const uint64_t now_us = NowUs();
 #ifdef __ANDROID__
     if (!decoder_ || !video_surface_attached_.load())
         return;
 
-    const auto pending = decoder_->codec_pending();
-    const bool codec_stalled = video::AndroidCodecOutputStalled(
-        now_us, last_decoded, decoder_->oldest_pending_us(), last_video_arrival_us_, pending);
-    const uint64_t last_progress = std::max(last_decoded, video_run_start_us_);
-    const bool picture_stalled = last_progress != 0 && now_us - last_progress >= 800'000 &&
-        last_video_arrival_us_ > last_progress && now_us - last_video_arrival_us_ <= 250'000;
-    if (!codec_stalled && !picture_stalled)
+    using Recovery = video::AndroidDecodeRecovery;
+    const auto live_since = std::max(last_decoded_frame_at_us_.load(std::memory_order_acquire),
+                                    video_run_start_us_);
+    if (live_since == 0 || NowUs() - live_since < Recovery::kNoOutputUs)
         return;
+
+    Recovery::Action action;
+    {
+        std::lock_guard lock(decoder_queue_mutex_);
+        if (!video_surface_attached_.load())
+            return;
+        const auto last_output = last_decoded_frame_at_us_.load(std::memory_order_acquire);
+        const auto now_us = NowUs();
+        const auto signals = decoder_->signals();
+        if (signals.output || signals.error || decoder_reset_requested_.load())
+            return;
+
+        const auto queued_since_us = decoder_queue_.empty() ? 0 : static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                decoder_queue_.front().enqueued_at.time_since_epoch()).count());
+        action = codec_recovery_.poll(now_us, {
+            last_output, video_run_start_us_, last_video_arrival_us_, last_codec_input_us_,
+            last_codec_idr_input_us_, queued_since_us, signals.input,
+        });
+        if (action == Recovery::Action::RestartCodec)
+        {
+            decoder_reset_requested_.store(true);
+            decoder_queue_cv_.notify_one();
+        }
+    }
+    if (action == Recovery::Action::RequestKeyframe)
+        request_keyframe("decode_soft_recovery");
 #else
-    const bool stalled = last_decoded != 0 && now_us >= last_decoded &&
-                         now_us - last_decoded >= 1'500'000;
-    if (!stalled)
+    const uint64_t last_decoded = last_decoded_frame_at_us_.load(std::memory_order_acquire);
+    const uint64_t now_us = NowUs();
+    if (last_decoded == 0 || now_us < last_decoded || now_us - last_decoded < 1'500'000)
         return;
-#endif
     const auto now = std::chrono::steady_clock::now();
     if (last_decode_stall_request_at_.time_since_epoch().count() != 0 &&
         now - last_decode_stall_request_at_ < std::chrono::milliseconds(1200))
         return;
-#ifdef __ANDROID__
-    {
-        std::lock_guard lock(decoder_queue_mutex_);
-        const auto signals = decoder_->signals();
-        if (last_decoded_frame_at_us_.load(std::memory_order_acquire) != last_decoded ||
-            signals.output || signals.error)
-            return;
-
-        if (decoder_->codec_pending() > 0)
-        {
-            last_decode_stall_request_at_ = now;
-            // The decoder worker keeps any queued IDR and can resume from it.
-            decoder_reset_requested_.store(true);
-            decoder_queue_cv_.notify_one();
-            return;
-        }
-        if (video::PicturesBeforeNewestKeyframe(decoder_queue_) < decoder_queue_.size())
-            return;
-        last_decode_stall_request_at_ = now;
-        decoder_resync_required_.store(true);
-    }
-#else
     last_decode_stall_request_at_ = now;
     {
         std::lock_guard<std::mutex> lock(decoder_queue_mutex_);
@@ -1149,8 +1157,8 @@ void LunaStreamSession::maybe_recover_decode_stall()
     decoder_resync_required_.store(true);
     if (!decoder_ || !decoder_->uses_hardware_frames())
         decoder_reset_requested_.store(true);
-#endif
     request_keyframe("decode_stall");
+#endif
 }
 
 void LunaStreamSession::maybe_recover_rtp_damage(bool incoming_idr)
@@ -1166,10 +1174,10 @@ void LunaStreamSession::maybe_recover_rtp_damage(bool incoming_idr)
         return;
 
 #ifdef __ANDROID__
-    // Recover from isolated damage while the live decoder is still producing
-    // pictures. Startup and consecutive damage need a clean reference chain.
+    // The decoder can still conceal missing references. Keep sending complete
+    // pictures after a network burst while requesting a clean keyframe.
     if (frames_decoded_.load(std::memory_order_relaxed) != 0 &&
-        stats.access_units_dropped - previous < 3)
+        !decoder_resync_required_.load())
     {
         request_keyframe("rtp_recovery");
         return;
@@ -1317,6 +1325,9 @@ bool LunaStreamSession::set_android_surface(ANativeWindow* window)
     const auto generation = ++video_surface_generation_;
     {
         std::lock_guard<std::mutex> lock(decoder_queue_mutex_);
+        codec_recovery_.reset();
+        last_codec_input_us_ = 0;
+        last_codec_idr_input_us_ = 0;
         clear_decoder_queue_locked();
     }
     const bool ready = decoder_->set_output_window(window, generation);

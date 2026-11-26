@@ -36,7 +36,6 @@ public:
     bool ready() const { return started_; }
     Signals signals();
     size_t codec_pending() const { return codec_queue_.count(); }
-    uint64_t oldest_pending_us() const { return codec_queue_.oldest_pending_us(); }
     uint64_t slow_codec_outputs() const { return codec_queue_.slow_outputs(); }
     uint64_t peak_playout_reserve_us() const { return peak_playout_reserve_us_.load(std::memory_order_relaxed); }
     uint64_t peak_codec_delay_us() const { return codec_queue_.peak_delay_us(); }

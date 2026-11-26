@@ -10,6 +10,7 @@
 #include "luna/luna_client.hpp"
 #include "stream/live_metrics.hpp"
 #include "stream/audio/AudioPipeline.hpp"
+#include "stream/DecodeQueuePolicy.hpp"
 #ifdef __ANDROID__
 #include "android_video_decoder.hpp"
 #include "android_microphone.hpp"
@@ -240,6 +241,10 @@ class LunaStreamSession
     std::atomic<uint64_t> queue_recoveries_ {0};
     uint64_t peak_decoder_queue_age_ms_ = 0; // Guarded by decoder_queue_mutex_.
     uint64_t waiting_for_keyframe_drops_ = 0; // Guarded by decoder_queue_mutex_.
+    // Guarded by decoder_queue_mutex_.
+    video::AndroidDecodeRecovery codec_recovery_;
+    uint64_t last_codec_input_us_ = 0;
+    uint64_t last_codec_idr_input_us_ = 0;
     std::atomic<bool> video_surface_attached_ {true};
     std::atomic<uint64_t> video_surface_generation_ {0};
 #else
