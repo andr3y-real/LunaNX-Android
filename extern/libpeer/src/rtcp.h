@@ -5,8 +5,12 @@
 #include <stdint.h>
 
 #ifdef __BYTE_ORDER
+#ifndef __BIG_ENDIAN
 #define __BIG_ENDIAN 4321
+#endif
+#ifndef __LITTLE_ENDIAN
 #define __LITTLE_ENDIAN 1234
+#endif
 #elif defined(__SWITCH__) || defined(_WIN32)
 #define __BIG_ENDIAN 4321
 #define __LITTLE_ENDIAN 1234
@@ -82,8 +86,14 @@ int rtcp_probe(uint8_t* packet, size_t size);
 
 int rtcp_get_pli(uint8_t* packet, int len, uint32_t sender_ssrc, uint32_t media_ssrc);
 
-int rtcp_get_nack(uint8_t* packet, int len, uint32_t sender_ssrc,
-                  uint32_t media_ssrc, uint16_t packet_id, uint16_t bitmask);
+#define RTCP_MAX_NACK_ENTRIES 12u
+typedef struct RtcpNack {
+  uint16_t packet_id;
+  uint16_t bitmask;
+} RtcpNack;
+
+int rtcp_get_nack(uint8_t* packet, size_t capacity, uint32_t sender_ssrc,
+                  uint32_t media_ssrc, const RtcpNack* entries, size_t count);
 
 int rtcp_get_fir(uint8_t* packet, int len, int* seqnr);
 

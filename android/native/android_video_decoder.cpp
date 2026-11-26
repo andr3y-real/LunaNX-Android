@@ -250,7 +250,7 @@ AndroidVideoDecoder::OutputProgress AndroidVideoDecoder::drain_output(uint64_t g
         const auto& output = frames[i];
         const bool stale = pictures - i > 2;
         const auto when_ns = stale ? std::nullopt : presentation_clock_.schedule(
-            output.info.presentationTimeUs * 1000LL, now_ns, i + 1 < pictures);
+            output.info.presentationTimeUs * 1000LL, now_ns);
         const auto released = when_ns
             ? AMediaCodec_releaseOutputBufferAtTime(codec_, output.index, *when_ns)
             : AMediaCodec_releaseOutputBuffer(codec_, output.index, false);

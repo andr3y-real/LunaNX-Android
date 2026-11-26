@@ -6,12 +6,12 @@
 #define RTP_RECOVERY_DEFAULT_GAP_HOLD_MS 105u
 #define RTP_RECOVERY_MIN_GAP_HOLD_MS 90u
 #define RTP_RECOVERY_MAX_GAP_HOLD_MS 140u
+#define RTP_RECOVERY_BURST_MAX_HOLD_MS 165u
 #define RTP_RECOVERY_NACK_REORDER_MS 5u
 #define RTP_RECOVERY_NACK_CHECK_MS 5u
-#define RTP_RECOVERY_NACK_LOOKAHEAD 68u
 #define RTP_RECOVERY_BURST_GAP_DISTANCE 64u
 #define RTP_RECOVERY_BURST_MIN_HOLD_MS 110u
-#define RTP_RECOVERY_BURST_HOLD_BONUS_MS 16u
+#define RTP_RECOVERY_BURST_HOLD_BONUS_MS 24u
 #define RTP_RECOVERY_STARTUP_ACCESS_UNITS 180u
 #define RTP_RECOVERY_STARTUP_HOLD_BONUS_MS 8u
 #define RTP_RECOVERY_STARTUP_REBASE_DISTANCE 384u
@@ -50,7 +50,7 @@ static inline uint32_t rtp_recovery_burst_gap_hold_ms(
                 RTP_RECOVERY_BURST_HOLD_BONUS_MS;
   const uint32_t burst_hold_ms = rtp_recovery_clamp_u32(
       measured_hold_ms, RTP_RECOVERY_BURST_MIN_HOLD_MS,
-      RTP_RECOVERY_MAX_GAP_HOLD_MS);
+      RTP_RECOVERY_BURST_MAX_HOLD_MS);
   return burst_hold_ms > regular_hold_ms ? burst_hold_ms : regular_hold_ms;
 }
 

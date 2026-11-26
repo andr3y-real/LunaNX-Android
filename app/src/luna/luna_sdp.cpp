@@ -82,7 +82,15 @@ LocalTransport ParseLocalTransport(const std::string& libpeer_sdp)
     return transport;
 }
 
-std::string BuildLunaOffer(const LocalTransport& t, unsigned long outgoing_audio_ssrc)
+H264ReceiveLevel H264ReceiveLevelFor(int height, int fps)
+{
+    if (height >= 1080)
+        return fps > 30 ? H264ReceiveLevel::Level42 : H264ReceiveLevel::Level40;
+    return fps > 30 ? H264ReceiveLevel::Level32 : H264ReceiveLevel::Level31;
+}
+
+std::string BuildLunaOffer(const LocalTransport& t, unsigned long outgoing_audio_ssrc,
+                           H264ReceiveLevel level)
 {
     const unsigned long audio_ssrc = outgoing_audio_ssrc ? outgoing_audio_ssrc : RandomSsrc();
     std::string sdp;
@@ -97,7 +105,7 @@ std::string BuildLunaOffer(const LocalTransport& t, unsigned long outgoing_audio
     Append(sdp, "a=msid-semantic: WMS lunanx");
     Append(sdp, "a=group:BUNDLE 0 1 2");
 
-    // Vidéo : réception seule, H.264 42e01f en mode de paquetisation 1.
+    // Receive-only H.264 Constrained Baseline, packetization mode 1.
     Append(sdp, "m=video 9 UDP/TLS/RTP/SAVPF 96 97");
     Append(sdp, "c=IN IP4 0.0.0.0");
     Append(sdp, "a=rtcp:9 IN IP4 0.0.0.0");
@@ -115,7 +123,16 @@ std::string BuildLunaOffer(const LocalTransport& t, unsigned long outgoing_audio
     Append(sdp, "a=rtcp-fb:96 ccm fir");
     Append(sdp, "a=rtcp-fb:96 nack");
     Append(sdp, "a=rtcp-fb:96 nack pli");
-    Append(sdp, "a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f");
+    const char* profile_level_id = "42e01f";
+    switch (level)
+    {
+        case H264ReceiveLevel::Level31: break;
+        case H264ReceiveLevel::Level32: profile_level_id = "42e020"; break;
+        case H264ReceiveLevel::Level40: profile_level_id = "42e028"; break;
+        case H264ReceiveLevel::Level42: profile_level_id = "42e02a"; break;
+    }
+    Append(sdp, std::string("a=fmtp:96 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=") +
+                profile_level_id);
     Append(sdp, "a=rtpmap:97 rtx/90000");
     Append(sdp, "a=fmtp:97 apt=96");
 

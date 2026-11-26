@@ -2,6 +2,7 @@
 
 // Run the production reorder buffer against a deterministic clock, without sockets.
 #include "../extern/libpeer/src/rtp.c"
+#include "../extern/libpeer/src/rtcp.c"
 
 static uint32_t now_ms;
 uint32_t ports_get_monotonic_time_ms(void) { return now_ms; }
@@ -98,21 +99,21 @@ static void test_nack_deadlines(void) {
 
   // A 92 ms session has time for one request. Packet arrival can advance the
   // PID before the response, but overlapping sequence numbers stay throttled.
-  uint16_t packet_id = 0, bitmask = 0;
+  RtcpNack entries[RTCP_MAX_NACK_ENTRIES];
   receive(&decoder, 65534, UINT32_MAX - 10);
   receive(&decoder, 3, UINT32_MAX - 3);
-  assert(!rtp_decoder_get_nack(&decoder, 0, 92, &packet_id, &bitmask));
-  assert(rtp_decoder_get_nack(&decoder, 1, 92, &packet_id, &bitmask));
-  assert(packet_id == 65535 && bitmask == 7);
-  assert(rtp_decoder_note_nack(&decoder, 1, packet_id, bitmask) == 0);
+  assert(!rtp_decoder_get_nacks(&decoder, 0, 92, entries));
+  assert(rtp_decoder_get_nacks(&decoder, 1, 92, entries) == 1);
+  assert(entries[0].packet_id == 65535 && entries[0].bitmask == 7);
+  assert(rtp_decoder_note_nack(&decoder, 1, entries[0].packet_id, entries[0].bitmask) == 0);
   assert(!retransmit(&decoder, 4, 2)); // Unrequested RTX cannot extend the window.
   receive(&decoder, 65535, 3);
-  assert(!rtp_decoder_get_nack(&decoder, 8, 92, &packet_id, &bitmask));
+  assert(!rtp_decoder_get_nacks(&decoder, 8, 92, entries));
   assert(retransmit(&decoder, 1, 90));
   assert(!retransmit(&decoder, 1, 91)); // Duplicate buffered RTX.
   assert(retransmit(&decoder, 0, 92));
   assert(!retransmit(&decoder, 0, 93)); // Late duplicate.
-  assert(!rtp_decoder_get_nack(&decoder, 94, 92, &packet_id, &bitmask));
+  assert(!rtp_decoder_get_nacks(&decoder, 94, 92, entries));
   assert(retransmit(&decoder, 2, 96));
   assert(output.count == 6 && output.sequences[5] == 3);
 
@@ -126,22 +127,59 @@ static void test_nack_deadlines(void) {
   rtp_decoder_expire_gap(&decoder, 213);
   assert(output.count == 8 && output.sequences[7] == 7);
 
-  // In a large loss, the second request covers new sequence numbers, and
-  // a short-RTT connection can retry once the first response was due.
+  // Pack all ranges for this loss into one feedback message. A short-RTT
+  // connection can retry once the first response was due.
   receive(&decoder, 45, 250);
-  assert(rtp_decoder_get_nack(&decoder, 255, 24, &packet_id, &bitmask));
-  assert(packet_id == 8 && bitmask == 65535);
-  assert(rtp_decoder_note_nack(&decoder, 255, packet_id, bitmask) == 0);
-  assert(rtp_decoder_get_nack(&decoder, 260, 24, &packet_id, &bitmask));
-  assert(packet_id == 25 && bitmask == 65535);
-  assert(rtp_decoder_note_nack(&decoder, 260, packet_id, bitmask) == 0);
-  assert(rtp_decoder_get_nack(&decoder, 279, 24, &packet_id, &bitmask));
-  assert(packet_id == 8 && bitmask == 65535);
-  assert(rtp_decoder_note_nack(&decoder, 279, packet_id, bitmask) == 17);
+  size_t count = rtp_decoder_get_nacks(&decoder, 255, 24, entries);
+  assert(count == 3);
+  assert(entries[0].packet_id == 8 && entries[0].bitmask == 65535);
+  assert(entries[1].packet_id == 25 && entries[1].bitmask == 65535);
+  assert(entries[2].packet_id == 42 && entries[2].bitmask == 3);
+  for (size_t i = 0; i < count; ++i)
+    assert(rtp_decoder_note_nack(&decoder, 255, entries[i].packet_id, entries[i].bitmask) == 0);
+  assert(rtp_decoder_get_nacks(&decoder, 260, 24, entries) == 0);
+  assert(rtp_decoder_get_nacks(&decoder, 279, 24, entries) == 3);
+  assert(rtp_decoder_note_nack(&decoder, 279, entries[0].packet_id, entries[0].bitmask) == 17);
+
+  rtp_decoder_expire_gap(&decoder, 361);
+  assert(output.count == 9);
+  decoder.access_units_completed = RTP_RECOVERY_STARTUP_ACCESS_UNITS;
+  decoder.reorder_burst_gap_hold_ms = rtp_recovery_burst_gap_hold_ms(140, 132, 3);
+  // With 132 ms RTT, request distant packets on the first feedback and
+  // retain enough time for their retransmission to arrive.
+  receive(&decoder, 446, 400);
+  assert(output.count == 9 && decoder.reorder_buffered_packets == 1);
+  count = rtp_decoder_get_nacks(&decoder, 405, 132, entries);
+  assert(count == RTCP_MAX_NACK_ENTRIES);
+  assert(entries[0].packet_id == 46 && entries[11].packet_id == 233 &&
+         entries[11].bitmask == 65535);
+  for (size_t i = 0; i < count; ++i)
+    assert(rtp_decoder_note_nack(&decoder, 405, entries[i].packet_id, entries[i].bitmask) == 0);
+  assert(rtp_decoder_get_nacks(&decoder, 410, 132, entries) == 0);
+  rtp_decoder_expire_gap(&decoder, 550);
+  assert(output.count == 9);
+  assert(retransmit(&decoder, 249, 550));
+  assert(!retransmit(&decoder, 250, 551));
+  rtp_decoder_expire_gap(&decoder, 565);
+  assert(output.count == 10 && output.sequences[9] == 249);
   free(decoder.reorder_buf);
+}
+
+static void test_nack_wire_format(void) {
+  const RtcpNack entries[] = {{65535, 3}, {50, 0xff00}};
+  const uint8_t expected[] = {
+      0x81, 205, 0, 4,  0x12, 0x34, 0x56, 0x78,
+      0x87, 0x65, 0x43, 0x21,  0xff, 0xff, 0, 3,  0, 50, 0xff, 0,
+  };
+  uint8_t packet[sizeof(expected)];
+  assert(rtcp_get_nack(packet, sizeof(packet) - 1, 1, 2, entries, 2) == -1);
+  assert(rtcp_get_nack(packet, sizeof(packet), 1, 2, entries, 0) == -1);
+  assert(rtcp_get_nack(packet, sizeof(packet), 0x12345678, 0x87654321, entries, 2) == sizeof(packet));
+  assert(memcmp(packet, expected, sizeof(packet)) == 0);
 }
 
 int main(void) {
   test_expiration_and_reorder();
   test_nack_deadlines();
+  test_nack_wire_format();
 }

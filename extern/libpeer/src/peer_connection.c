@@ -100,8 +100,6 @@ struct PeerConnection {
   uint32_t receiver_reports_sent;
 };
 
-static int peer_connection_send_rtcp_nack(PeerConnection* pc, uint32_t ssrc,
-                                          uint16_t packet_id, uint16_t bitmask);
 static void peer_connection_maybe_send_video_nack(PeerConnection* pc);
 
 #if !defined(__ANDROID__)
@@ -1100,19 +1098,16 @@ int peer_connection_send_rtcp_pil(PeerConnection* pc, uint32_t ssrc) {
 }
 
 static int peer_connection_send_rtcp_nack(PeerConnection* pc, uint32_t ssrc,
-                                          uint16_t packet_id, uint16_t bitmask) {
-  uint8_t nackbuf[64];
-  int size = 16;
+                                          const RtcpNack* entries, size_t count) {
+  uint8_t nackbuf[128];
 
   if (!pc || pc->state != PEER_CONNECTION_COMPLETED || ssrc == 0)
     return -1;
-  if (rtcp_get_nack(nackbuf, size, pc->vrtp_encoder.ssrc, ssrc,
-                    packet_id, bitmask) != size)
+  int size = rtcp_get_nack(nackbuf, sizeof(nackbuf), pc->vrtp_encoder.ssrc, ssrc,
+                           entries, count);
+  if (size < 0 || dtls_srtp_encrypt_rctp_packet(&pc->dtls_srtp, nackbuf, &size) != 0)
     return -1;
-
-  if (dtls_srtp_encrypt_rctp_packet(&pc->dtls_srtp, nackbuf, &size) != 0)
-    return -1;
-  return agent_send(&pc->agent, nackbuf, size);
+  return agent_send(&pc->agent, nackbuf, size) == size ? size : -1;
 }
 
 static uint32_t peer_connection_nack_packet_count(uint16_t bitmask) {
@@ -1135,18 +1130,18 @@ static void peer_connection_maybe_send_video_nack(PeerConnection* pc) {
   pc->video_nack_checked = 1;
   pc->video_last_nack_check_ms = now_ms;
 
-  uint16_t packet_id = 0;
-  uint16_t bitmask = 0;
-  if (!rtp_decoder_get_nack(&pc->vrtp_decoder, now_ms, pc->agent.rtt_current_ms,
-                           &packet_id, &bitmask))
+  RtcpNack entries[RTCP_MAX_NACK_ENTRIES];
+  const size_t count = rtp_decoder_get_nacks(&pc->vrtp_decoder, now_ms,
+                                             pc->agent.rtt_current_ms, entries);
+  if (count == 0 || peer_connection_send_rtcp_nack(pc, pc->remote_vssrc, entries, count) < 0)
     return;
 
-  if (peer_connection_send_rtcp_nack(pc, pc->remote_vssrc, packet_id, bitmask) < 0)
-    return;
-
-  pc->video_nack_retries += rtp_decoder_note_nack(&pc->vrtp_decoder, now_ms, packet_id, bitmask);
   pc->video_nack_requests++;
-  pc->video_nack_packets_requested += peer_connection_nack_packet_count(bitmask);
+  for (size_t i = 0; i < count; ++i) {
+    pc->video_nack_retries += rtp_decoder_note_nack(&pc->vrtp_decoder, now_ms,
+                                                   entries[i].packet_id, entries[i].bitmask);
+    pc->video_nack_packets_requested += peer_connection_nack_packet_count(entries[i].bitmask);
+  }
 }
 
 void peer_connection_set_max_receive_bitrate(PeerConnection* pc, uint32_t bps) {

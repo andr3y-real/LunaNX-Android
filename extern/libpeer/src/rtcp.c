@@ -38,27 +38,32 @@ int rtcp_get_pli(uint8_t* packet, int len, uint32_t sender_ssrc, uint32_t media_
   return 12;
 }
 
-int rtcp_get_nack(uint8_t* packet, int len, uint32_t sender_ssrc,
-                  uint32_t media_ssrc, uint16_t packet_id, uint16_t bitmask) {
-  if (packet == NULL || len != 16)
+int rtcp_get_nack(uint8_t* packet, size_t capacity, uint32_t sender_ssrc,
+                  uint32_t media_ssrc, const RtcpNack* entries, size_t count) {
+  if (!packet || !entries || count == 0 || count > RTCP_MAX_NACK_ENTRIES)
+    return -1;
+  const size_t size = 12 + count * 4;
+  if (capacity < size)
     return -1;
 
-  memset(packet, 0, len);
+  memset(packet, 0, size);
   RtcpHeader* header = (RtcpHeader*)packet;
   header->version = 2;
   header->type = RTCP_RTPFB;
   header->rc = 1;
-  header->length = htons((len / 4) - 1);
+  header->length = htons((uint16_t)(2 + count));
 
   const uint32_t network_sender_ssrc = htonl(sender_ssrc);
   const uint32_t network_media_ssrc = htonl(media_ssrc);
-  const uint16_t network_packet_id = htons(packet_id);
-  const uint16_t network_bitmask = htons(bitmask);
   memcpy(packet + 4, &network_sender_ssrc, sizeof(network_sender_ssrc));
   memcpy(packet + 8, &network_media_ssrc, sizeof(network_media_ssrc));
-  memcpy(packet + 12, &network_packet_id, sizeof(network_packet_id));
-  memcpy(packet + 14, &network_bitmask, sizeof(network_bitmask));
-  return len;
+  for (size_t i = 0; i < count; ++i) {
+    const uint16_t packet_id = htons(entries[i].packet_id);
+    const uint16_t bitmask = htons(entries[i].bitmask);
+    memcpy(packet + 12 + i * 4, &packet_id, sizeof(packet_id));
+    memcpy(packet + 14 + i * 4, &bitmask, sizeof(bitmask));
+  }
+  return (int)size;
 }
 
 int rtcp_get_fir(uint8_t* packet, int len, int* seqnr) {

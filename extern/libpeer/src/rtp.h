@@ -23,6 +23,7 @@
 
 #include "config.h"
 #include "peer_connection.h"
+#include "rtcp.h"
 
 typedef enum RtpPayloadType {
 
@@ -89,8 +90,9 @@ typedef void (*RtpOnVideoPacket)(const PeerVideoPacket* packet, void* user_data)
 // window prevents normal UDP bursts from triggering artificial packet skips.
 #define RTP_REORDER_WINDOW 512
 #define RTP_REORDER_MAX_HOLD_PACKETS 192
-#define RTP_REORDER_BURST_MAX_HOLD_PACKETS 384
+#define RTP_REORDER_BURST_MAX_HOLD_PACKETS RTP_REORDER_WINDOW
 #define RTP_REORDER_PACKET_CAPACITY (CONFIG_MTU + 256)
+#define RTP_RECOVERY_NACK_LOOKAHEAD (RTCP_MAX_NACK_ENTRIES * 17u)
 
 struct RtpDecoder {
   RtpPayloadType type;
@@ -152,6 +154,7 @@ struct RtpDecoder {
   uint32_t reorder_gap_expirations;
   uint32_t reorder_burst_fast_forwards;
   uint8_t reorder_gap_wait_counted;
+  uint8_t reorder_gap_is_burst;
 };
 
 struct RtpEncoder {
@@ -192,8 +195,8 @@ void rtp_decoder_set_reorder_burst_grace_ms(RtpDecoder* rtp_decoder,
                                             uint32_t hold_ms);
 
 int rtp_decoder_decode_retransmission(RtpDecoder* decoder, const uint8_t* data, size_t size);
-int rtp_decoder_get_nack(const RtpDecoder* decoder, uint32_t now_ms,
-                        uint32_t rtt_ms, uint16_t* packet_id, uint16_t* bitmask);
+size_t rtp_decoder_get_nacks(const RtpDecoder* decoder, uint32_t now_ms,
+                            uint32_t rtt_ms, RtcpNack entries[RTCP_MAX_NACK_ENTRIES]);
 uint32_t rtp_decoder_note_nack(RtpDecoder* decoder, uint32_t now_ms,
                                uint16_t packet_id, uint16_t bitmask);
 

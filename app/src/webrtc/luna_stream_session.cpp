@@ -294,7 +294,8 @@ void LunaStreamSession::signaling_loop()
                 throw luna::LunaError(Tr("Offre WebRTC locale incomplète"));
 #ifdef __ANDROID__
             // Match libpeer's Opus sender SSRC to the advertised audio track.
-            offer = luna::BuildLunaOffer(transport, 6);
+            const auto h264_level = luna::H264ReceiveLevelFor(settings_.height, settings_.fps);
+            offer = luna::BuildLunaOffer(transport, 6, h264_level);
 #else
             offer = luna::BuildLunaOffer(transport);
 #endif
@@ -526,7 +527,13 @@ void LunaStreamSession::send_client_startup_messages()
     display.height = settings_.height;
     display.fps = settings_.fps;
     if (settings_.bitrate_kbps > 0)
+    {
         display.start_bitrate = static_cast<uint32_t>(settings_.bitrate_kbps) * 1000u;
+#ifdef __ANDROID__
+        display.max_bitrate = display.start_bitrate;
+        display.min_bitrate = std::min(display.min_bitrate, display.max_bitrate);
+#endif
+    }
     if (display.max_bitrate < display.start_bitrate)
         display.max_bitrate = display.start_bitrate;
 

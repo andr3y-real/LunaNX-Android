@@ -22,7 +22,10 @@ LocalTransport ParseLocalTransport(const std::string& libpeer_sdp);
 
 // Offre au format du client web Luna (capture Chrome) réduite à ce que la Switch décode :
 // vidéo H.264 Constrained Baseline (PT 96, rtx 97) en réception, Opus stéréo, data channel SCTP.
-std::string BuildLunaOffer(const LocalTransport& transport, unsigned long outgoing_audio_ssrc = 0);
+enum class H264ReceiveLevel { Level31, Level32, Level40, Level42 };
+H264ReceiveLevel H264ReceiveLevelFor(int height, int fps);
+std::string BuildLunaOffer(const LocalTransport& transport, unsigned long outgoing_audio_ssrc = 0,
+                           H264ReceiveLevel level = H264ReceiveLevel::Level31);
 
 // Normalise la réponse du serveur pour libpeer : fins de ligne CRLF et retrait des
 // codecs auxiliaires que la Switch ne traite pas (RED/ULPFEC/FlexFEC).
