@@ -125,6 +125,7 @@ class LunaStreamSession
         uint64_t codec_watchdog_resets = 0;
         uint64_t slow_codec_outputs = 0;
         uint64_t peak_playout_reserve_ms = 0;
+        uint64_t deferred_frames_presented = 0;
     };
     AndroidVideoStats android_video_stats();
     bool set_android_surface(ANativeWindow* window);

@@ -204,7 +204,9 @@ void AndroidVideoDecoder::on_error(AMediaCodec* codec, void* context, media_stat
 AndroidVideoDecoder::Signals AndroidVideoDecoder::signals()
 {
     std::lock_guard lock(callback_mutex_);
-    return {!inputs_.empty(), !outputs_.empty(), codec_error_};
+    const auto retry_us = presentation_retry_us_.load(std::memory_order_relaxed);
+    const bool retry_due = retry_us != 0 && monotonic_us() >= retry_us;
+    return {!inputs_.empty(), !outputs_.empty() || retry_due, codec_error_, retry_us};
 }
 
 AndroidVideoDecoder::OutputProgress AndroidVideoDecoder::drain_output(uint64_t generation)
@@ -218,7 +220,15 @@ AndroidVideoDecoder::OutputProgress AndroidVideoDecoder::drain_output(uint64_t g
     }
 
     std::array<Output, 32> frames;
-    size_t count = 0;
+    const size_t deferred = deferred_output_ ? 1u : 0u;
+    if (deferred_output_)
+    {
+        frames[0] = *deferred_output_;
+        deferred_output_.reset();
+        presentation_retry_us_.store(0, std::memory_order_relaxed);
+    }
+
+    size_t count = deferred;
     {
         std::lock_guard callback_lock(callback_mutex_);
         while (!outputs_.empty() && count < frames.size())
@@ -228,12 +238,16 @@ AndroidVideoDecoder::OutputProgress AndroidVideoDecoder::drain_output(uint64_t g
         }
     }
 
-    size_t pictures = 0;
-    for (size_t i = 0; i < count; ++i)
+    size_t pictures = deferred;
+    for (size_t i = deferred; i < count; ++i)
     {
         const auto& output = frames[i];
         if (!(output.info.flags & AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG))
+        {
+            codec_queue_.produced(output.info.presentationTimeUs, output.available_us);
+            ++progress.decoded;
             frames[pictures++] = output;
+        }
         else if (AMediaCodec_releaseOutputBuffer(codec_, output.index, false) != AMEDIA_OK)
         {
             progress.error = true;
@@ -266,6 +280,16 @@ AndroidVideoDecoder::OutputProgress AndroidVideoDecoder::drain_output(uint64_t g
         const auto& output = frames[i];
         const bool stale = i < first;
         const auto when_ns = stale ? std::nullopt : render_times[i - first];
+        if (!when_ns && i + 1 == pictures)
+        {
+            // Keep one picture when the next Surface slot is still too far
+            // ahead. Newer output can replace it before the timed wake.
+            deferred_output_ = output;
+            const auto retry_ns = presentation_clock_.retry_at_ns();
+            presentation_retry_us_.store((retry_ns + 999) / 1000, std::memory_order_relaxed);
+            break;
+        }
+
         const auto released = when_ns
             ? AMediaCodec_releaseOutputBufferAtTime(codec_, output.index, *when_ns)
             : AMediaCodec_releaseOutputBuffer(codec_, output.index, false);
@@ -276,10 +300,12 @@ AndroidVideoDecoder::OutputProgress AndroidVideoDecoder::drain_output(uint64_t g
         }
         if (stale)
             stale_frames_dropped_.fetch_add(1, std::memory_order_relaxed);
-        codec_queue_.produced(output.info.presentationTimeUs, output.available_us);
-        ++progress.decoded;
         if (when_ns)
+        {
             ++progress.scheduled;
+            if (i < deferred)
+                deferred_frames_presented_.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     return progress;
 }
@@ -376,6 +402,8 @@ void AndroidVideoDecoder::close_locked()
     }
     codec_ = nullptr;
     started_ = false;
+    deferred_output_.reset();
+    presentation_retry_us_.store(0, std::memory_order_relaxed);
     have_timestamp_ = false;
     presentation_ticks_ = 0;
     presentation_clock_.reset();

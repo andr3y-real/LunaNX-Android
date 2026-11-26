@@ -201,6 +201,35 @@ static void test_gap_retains_rtx_deadline(void) {
   free(decoder.reorder_buf);
 }
 
+static void test_large_burst_keeps_inflight_rtx(void) {
+  struct Output output = {0};
+  RtpDecoder decoder = {0};
+  decoder.type = PT_H264;
+  decoder.user_data = &output;
+  decoder.decode_func = record_sequence;
+  decoder.reorder_buf = calloc(RTP_REORDER_WINDOW, RTP_REORDER_PACKET_CAPACITY);
+  assert(decoder.reorder_buf);
+  decoder.access_units_completed = RTP_RECOVERY_STARTUP_ACCESS_UNITS;
+  rtp_decoder_set_reorder_grace_ms(&decoder, 112);
+  rtp_decoder_set_reorder_burst_grace_ms(&decoder, 130);
+  receive(&decoder, 1000, 100);
+  receive(&decoder, 1205, 105);
+  RtcpNack entries[RTCP_MAX_NACK_ENTRIES];
+  assert(rtp_decoder_get_nacks(&decoder, 110, 90, entries) == RTCP_MAX_NACK_ENTRIES);
+  assert(rtp_decoder_note_nack(&decoder, 110, 90, entries[0].packet_id, entries[0].bitmask) == 0);
+
+  // Far-ahead data used to force the receiver to skip an RTX already in flight.
+  receive(&decoder, 1620, 145);
+  assert(decoder.forced_sequence_skips == 0);
+  assert(retransmit(&decoder, 1001, 200));
+  assert(output.count == 2 && output.sequences[1] == 1001);
+  rtp_decoder_expire_gap(&decoder, 234);
+  assert(output.count == 2);
+  rtp_decoder_expire_gap(&decoder, 235);
+  assert(output.count == 3 && output.sequences[2] == 1205);
+  free(decoder.reorder_buf);
+}
+
 static void test_nack_wire_format(void) {
   const RtcpNack entries[] = {{65535, 3}, {50, 0xff00}};
   const uint8_t expected[] = {
@@ -219,4 +248,5 @@ int main(void) {
   test_nack_deadlines();
   test_nack_wire_format();
   test_gap_retains_rtx_deadline();
+  test_large_burst_keeps_inflight_rtx();
 }

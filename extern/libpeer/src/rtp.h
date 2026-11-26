@@ -86,9 +86,9 @@ typedef void (*RtpOnPacket)(uint8_t* packet, size_t bytes, void* user_data);
 typedef void (*RtpOnAudioPacket)(const PeerAudioPacket* packet, void* user_data);
 typedef void (*RtpOnVideoPacket)(const PeerVideoPacket* packet, void* user_data);
 
-// Dynamic 720p/1080p keyframes regularly span more than 100 RTP packets. A larger
-// window prevents normal UDP bursts from triggering artificial packet skips.
-#define RTP_REORDER_WINDOW 512
+// Leave room for a large keyframe and later packets while requested RTX is
+// in flight. The existing time deadline still limits how long pictures wait.
+#define RTP_REORDER_WINDOW 1024
 #define RTP_REORDER_MAX_HOLD_PACKETS 192
 #define RTP_REORDER_BURST_MAX_HOLD_PACKETS RTP_REORDER_WINDOW
 #define RTP_REORDER_PACKET_CAPACITY (CONFIG_MTU + 256)

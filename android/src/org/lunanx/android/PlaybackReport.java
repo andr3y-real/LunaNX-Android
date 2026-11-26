@@ -36,6 +36,7 @@ final class PlaybackReport {
     private long codecWatchdogResets = -1;
     private long slowCodecOutputs = -1;
     private long peakPlayoutReserveMs = -1;
+    private long deferredFramesPresented = -1;
     private int lastPhase;
     private int renderedWidth;
     private int renderedHeight;
@@ -99,6 +100,7 @@ final class PlaybackReport {
         codecWatchdogResets = parseLongSafe(status, 41, codecWatchdogResets);
         slowCodecOutputs = parseLongSafe(status, 42, slowCodecOutputs);
         peakPlayoutReserveMs = parseLongSafe(status, 43, peakPlayoutReserveMs);
+        deferredFramesPresented = parseLongSafe(status, 44, deferredFramesPresented);
         long newWaitingDrops = parseLongSafe(status, 15, waitingForKeyframeDrops);
 
         if (status.length >= 23) {
@@ -256,6 +258,8 @@ final class PlaybackReport {
             .append(" / ").append(decoded).append(" / ").append(scheduled).append('\n');
         out.append("Descartados por backlog (stale) / cadência: ").append(codecStaleDrops)
             .append(" / ").append(Math.max(0, decoded - scheduled - codecStaleDrops)).append('\n');
+        if (deferredFramesPresented >= 0)
+            out.append("Quadros reaproveitados ao esperar vaga na tela: ").append(deferredFramesPresented).append('\n');
         if (measuredMs > 0) {
             out.append(String.format(Locale.ROOT, "FPS médio recebido / decodificado: %.1f / %.1f%n",
                 measuredReceived * 1000.0 / measuredMs, measuredDecoded * 1000.0 / measuredMs));

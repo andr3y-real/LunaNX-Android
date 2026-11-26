@@ -749,15 +749,24 @@ void LunaStreamSession::decoder_loop()
         AndroidVideoDecoder::Signals signals {};
         {
             std::unique_lock lock(decoder_queue_mutex_);
-            decoder_queue_cv_.wait(lock, [&] {
-                if (!decoder_running_.load())
-                    return true;
-                if (!video_surface_attached_.load())
-                    return false;
-                signals = decoder_->signals();
-                return signals.output || signals.error || decoder_reset_requested_.load() ||
-                    (signals.input && !decoder_queue_.empty());
-            });
+            while (decoder_running_.load())
+            {
+                if (video_surface_attached_.load())
+                {
+                    signals = decoder_->signals();
+                    if (signals.output || signals.error || decoder_reset_requested_.load() ||
+                        (signals.input && !decoder_queue_.empty()))
+                        break;
+                    if (signals.presentation_retry_us)
+                    {
+                        const auto retry_at = std::chrono::steady_clock::time_point(
+                            std::chrono::microseconds(signals.presentation_retry_us));
+                        decoder_queue_cv_.wait_until(lock, retry_at);
+                        continue;
+                    }
+                }
+                decoder_queue_cv_.wait(lock);
+            }
             if (!decoder_running_.load())
                 break;
 
@@ -780,7 +789,6 @@ void LunaStreamSession::decoder_loop()
         if (output.decoded > 0)
         {
             last_decoded_frame_at_us_.store(NowUs(), std::memory_order_release);
-            presented_frames_.fetch_add(output.scheduled, std::memory_order_relaxed);
             const auto [vw, vh] = decoder_->video_size();
             if (vw > 0 && vh > 0)
             {
@@ -793,6 +801,8 @@ void LunaStreamSession::decoder_loop()
             // Output may arrive between the watchdog decision and this wakeup.
             reset_requested = false;
         }
+        if (output.scheduled > 0)
+            presented_frames_.fetch_add(output.scheduled, std::memory_order_relaxed);
 
         bool submit_error = false;
         if (!reset_requested && !signals.error && !output.error)
@@ -1380,7 +1390,8 @@ LunaStreamSession::AndroidVideoStats LunaStreamSession::android_video_stats()
             static_cast<uint64_t>(keyframe_request_attempts_), peak_decoder_queue_age_ms_,
             codec_watchdog_resets_.load(),
             decoder_ ? decoder_->slow_codec_outputs() : 0,
-            decoder_ ? decoder_->peak_playout_reserve_us() / 1000 : 0};
+            decoder_ ? decoder_->peak_playout_reserve_us() / 1000 : 0,
+            decoder_ ? decoder_->deferred_frames_presented() : 0};
 }
 #endif
 

@@ -888,7 +888,8 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeStatus)(JNIEnv* env, 
         std::to_string(video.peak_queue_ms),
         std::to_string(video.codec_watchdog_resets),
         std::to_string(video.slow_codec_outputs),
-        std::to_string(video.peak_playout_reserve_ms)
+        std::to_string(video.peak_playout_reserve_ms),
+        std::to_string(video.deferred_frames_presented)
     });
 }
 

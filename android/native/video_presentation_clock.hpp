@@ -54,6 +54,10 @@ public:
         return times;
     }
 
+    // A rejected picture becomes eligible when the next slot is within
+    // the lookahead. Retrying at that instant preserves spacing on the Surface.
+    int64_t retry_at_ns() const { return last_output_ns_ + spacing_ns_ - lookahead_ns_; }
+
     void reset() { have_arrival_ = false; has_output_ = false; variation_ns_ = 0; }
     int64_t reserve_ns() const { return std::min(reserve_cap_ns_, 2 * variation_ns_); }
 

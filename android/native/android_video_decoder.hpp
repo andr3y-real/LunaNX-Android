@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <utility>
 #include "codec_queue.hpp"
 #include "video_presentation_clock.hpp"
@@ -20,6 +21,7 @@ public:
         bool input;
         bool output;
         bool error;
+        uint64_t presentation_retry_us;
     };
 
     enum class SubmitStatus
@@ -40,6 +42,7 @@ public:
     uint64_t peak_playout_reserve_us() const { return peak_playout_reserve_us_.load(std::memory_order_relaxed); }
     uint64_t peak_codec_delay_us() const { return codec_queue_.peak_delay_us(); }
     uint64_t submit_retries() const { return submit_retries_.load(std::memory_order_relaxed); }
+    uint64_t deferred_frames_presented() const { return deferred_frames_presented_.load(std::memory_order_relaxed); }
     uint64_t stale_frames_dropped() const { return stale_frames_dropped_.load(std::memory_order_relaxed); }
     std::pair<int, int> video_size() const
     {
@@ -83,6 +86,8 @@ private:
     const std::function<void()> wake_;
     VideoPresentationClock presentation_clock_;
     CodecQueue codec_queue_;
+    std::optional<Output> deferred_output_;
+    std::atomic<uint64_t> presentation_retry_us_ {0};
     uint64_t output_generation_ = 0;
     std::unique_ptr<ANativeWindow, decltype(&ANativeWindow_release)> window_{nullptr, ANativeWindow_release};
     AMediaCodec* codec_ = nullptr;
@@ -94,6 +99,7 @@ private:
     std::atomic<int> decoded_height_ {0};
     std::atomic<uint64_t> peak_playout_reserve_us_ {0};
     std::atomic<uint64_t> submit_retries_ {0};
+    std::atomic<uint64_t> deferred_frames_presented_ {0};
     std::atomic<uint64_t> stale_frames_dropped_ {0};
 
     std::mutex callback_mutex_;

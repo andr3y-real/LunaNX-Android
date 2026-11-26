@@ -28,7 +28,12 @@ int main()
     const int64_t wake = start + frame / 2;
     const auto batch = clock.schedule_pair({2 * frame, start}, {3 * frame, start}, wake);
     assert(!batch[0] && batch[1] == start + 2 * frame);
-    assert(!clock.schedule({4 * frame, wake}, wake));
+    const VideoPresentationClock::Picture waiting {4 * frame, wake};
+    assert(!clock.schedule(waiting, wake));
+    const auto retry = clock.retry_at_ns();
+    assert(retry > wake && retry - wake < frame);
+    assert(!clock.schedule(waiting, retry - 1));
+    assert(clock.schedule(waiting, retry) == start + 3 * frame);
     const auto resumed = clock.schedule({5 * frame, start + 2'000'000'000}, start + 2'000'000'000);
     assert(resumed == start + 2'000'000'000 && clock.reserve_ns() == 0);
 
