@@ -634,6 +634,42 @@ bool LunaStreamSession::send_gamepad(const input::GamepadState& state)
     return true;
 }
 
+bool LunaStreamSession::send_key(const std::string& key, bool pressed)
+{
+    if (input_sid_ < 0 || key.empty())
+        return false;
+    std::lock_guard<std::recursive_mutex> lock(peer_mutex_);
+    if (!pc_ || input_sid_ < 0)
+        return false;
+    std::vector<uint8_t> report = input_encoder_.EncodeKeyEvent(key, pressed);
+    return peer_connection_datachannel_send_binary_sid(
+        pc_, reinterpret_cast<char*>(report.data()), report.size(), static_cast<uint16_t>(input_sid_)) >= 0;
+}
+
+bool LunaStreamSession::send_pointer_move(double x_percent, double y_percent)
+{
+    if (input_sid_ < 0)
+        return false;
+    std::lock_guard<std::recursive_mutex> lock(peer_mutex_);
+    if (!pc_ || input_sid_ < 0)
+        return false;
+    std::vector<uint8_t> report = input_encoder_.EncodePointerMove(x_percent, y_percent);
+    return peer_connection_datachannel_send_binary_sid(
+        pc_, reinterpret_cast<char*>(report.data()), report.size(), static_cast<uint16_t>(input_sid_)) >= 0;
+}
+
+bool LunaStreamSession::send_pointer_button(bool pressed)
+{
+    if (input_sid_ < 0)
+        return false;
+    std::lock_guard<std::recursive_mutex> lock(peer_mutex_);
+    if (!pc_ || input_sid_ < 0)
+        return false;
+    std::vector<uint8_t> report = input_encoder_.EncodePointerButton(pressed);
+    return peer_connection_datachannel_send_binary_sid(
+        pc_, reinterpret_cast<char*>(report.data()), report.size(), static_cast<uint16_t>(input_sid_)) >= 0;
+}
+
 void LunaStreamSession::request_stop()
 {
     if (stop_requested_.exchange(true))

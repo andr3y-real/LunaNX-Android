@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,15 @@ class ProtoWriter
     ProtoWriter& String(std::uint32_t field, const std::string& value)
     {
         return Bytes(field, reinterpret_cast<const std::uint8_t*>(value.data()), value.size());
+    }
+
+    ProtoWriter& Double(std::uint32_t field, double value)
+    {
+        Key(field, 1);
+        std::uint8_t buf[8];
+        std::memcpy(buf, &value, 8);
+        out_.insert(out_.end(), buf, buf + 8);
+        return *this;
     }
 
     // Sous-message, écrit même vide (le navigateur envoie certains messages vides).

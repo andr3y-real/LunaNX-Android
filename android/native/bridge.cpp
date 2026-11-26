@@ -40,6 +40,7 @@ std::vector<luna::Game> top_games;
 std::vector<luna::Shelf> recent_shelves;
 std::optional<luna::Game> playing;
 std::unique_ptr<LunaStreamSession> session;
+std::mutex session_mutex;
 lunanx::input::GamepadState previous_input;
 bool sent_input = false;
 int64_t last_report_ms = 0;
@@ -566,6 +567,41 @@ extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeExplore)(
     }
 }
 
+extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeGameDetail)(
+    JNIEnv* env, jobject, jint index)
+{
+    try
+    {
+        if (!client || index < 0 || static_cast<size_t>(index) >= results.size())
+            throw std::runtime_error("O jogo selecionado não está mais disponível.");
+        auto game = client->FetchGameDetail(results[index]);
+        results[index] = game;
+        std::string genres;
+        for (size_t i = 0; i < game.genres.size(); ++i)
+        {
+            if (i > 0) genres += ", ";
+            genres += game.genres[i];
+        }
+        return strings(env, {
+            game.title,
+            game.publisher,
+            game.developer,
+            game.description,
+            game.age_rating,
+            genres,
+            game.image_portrait,
+            game.image_landscape,
+            game.offer_tag,
+            game.premium_only ? "1" : "0",
+        });
+    }
+    catch (const std::exception& error)
+    {
+        report_error(env, error.what());
+        return nullptr;
+    }
+}
+
 extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeStart)(
     JNIEnv* env, jobject, jint index, jobject surface, jboolean prefer_pt_br, jint height, jint fps, jint bitrate_mbps)
 {
@@ -595,17 +631,20 @@ extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeStart)(
 
 extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeSetMicrophone)(JNIEnv*, jobject, jboolean enabled)
 {
+    std::lock_guard<std::mutex> lock(session_mutex);
     return session && session->set_microphone_enabled(enabled == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeMicrophoneActive)(JNIEnv*, jobject)
 {
+    std::lock_guard<std::mutex> lock(session_mutex);
     return session && session->microphone_active() ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jint JNICALL JNI_METHOD(nativeTick)(
     JNIEnv*, jobject, jint buttons, jfloat lt, jfloat rt, jfloat x, jfloat y, jfloat z, jfloat rz)
 {
+    std::lock_guard<std::mutex> lock(session_mutex);
     if (!session)
         return 0;
     session->poll();
@@ -633,6 +672,7 @@ extern "C" JNIEXPORT jint JNICALL JNI_METHOD(nativeTick)(
 
 extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeStatus)(JNIEnv* env, jobject)
 {
+    std::lock_guard<std::mutex> lock(session_mutex);
     if (!session)
         return nullptr;
     if (playing && session->phase() == LunaStreamSession::Phase::Streaming)
@@ -671,6 +711,7 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeStatus)(JNIEnv* env, 
 extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeSetVideoSurface)(
     JNIEnv* env, jobject, jobject surface)
 {
+    std::lock_guard<std::mutex> lock(session_mutex);
     if (!session)
         return JNI_FALSE;
     std::unique_ptr<ANativeWindow, decltype(&ANativeWindow_release)> window(
@@ -680,8 +721,36 @@ extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeSetVideoSurface)(
     return session->set_android_surface(window.get()) ? JNI_TRUE : JNI_FALSE;
 }
 
+extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeSendKey)(
+    JNIEnv* env, jobject, jstring key, jboolean pressed)
+{
+    std::lock_guard<std::mutex> lock(session_mutex);
+    if (!session || !key)
+        return JNI_FALSE;
+    return session->send_key(from_java(env, key), pressed == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeSendPointerMove)(
+    JNIEnv*, jobject, jdouble x_percent, jdouble y_percent)
+{
+    std::lock_guard<std::mutex> lock(session_mutex);
+    if (!session)
+        return JNI_FALSE;
+    return session->send_pointer_move(x_percent, y_percent) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeSendPointerButton)(
+    JNIEnv*, jobject, jboolean pressed)
+{
+    std::lock_guard<std::mutex> lock(session_mutex);
+    if (!session)
+        return JNI_FALSE;
+    return session->send_pointer_button(pressed == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeStop)(JNIEnv*, jobject)
 {
+    std::lock_guard<std::mutex> lock(session_mutex);
     if (session && sent_input)
         session->send_gamepad({});
     session.reset();

@@ -64,6 +64,9 @@ class LunaStreamSession
     void poll();
 
     bool send_gamepad(const input::GamepadState& state);
+    bool send_key(const std::string& key, bool pressed);
+    bool send_pointer_move(double x_percent, double y_percent);
+    bool send_pointer_button(bool pressed);
 #ifndef __ANDROID__
     void draw(NVGcontext* vg, int width, int height, AVFrame* frame, uint64_t generation);
     int64_t video_target_rtp_timestamp() const;

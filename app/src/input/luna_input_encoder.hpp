@@ -61,6 +61,9 @@ class LunaInputEncoder
 {
   public:
     std::vector<std::uint8_t> EncodeGamepad(const GamepadState& state);
+    std::vector<std::uint8_t> EncodeKeyEvent(const std::string& key, bool pressed);
+    std::vector<std::uint8_t> EncodePointerMove(double x_percent, double y_percent);
+    std::vector<std::uint8_t> EncodePointerButton(bool pressed);
     static std::vector<std::uint8_t> EncodeInputReady();
 
     // Canaux créés par le client, dans l'ordre des identifiants SCTP 1 et 3.
@@ -71,6 +74,7 @@ class LunaInputEncoder
 
   private:
     std::uint32_t sequence_ = 0;
+    std::uint64_t pointer_seq_ = 1;
 };
 
 // Conversion d'un axe Borealis [-1, 1] vers l'échelle XInput.

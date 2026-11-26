@@ -66,6 +66,71 @@ std::vector<std::uint8_t> LunaInputEncoder::EncodeGamepad(const GamepadState& st
     return message.data();
 }
 
+std::vector<std::uint8_t> LunaInputEncoder::EncodeKeyEvent(const std::string& key, bool pressed)
+{
+    const std::uint64_t now = WallClockMilliseconds();
+    ProtoWriter timing;
+    timing.Varint(1, now).Varint(3, 2);
+    if (!pressed)
+        timing.Varint(4, 1);
+    timing.Varint(8, now);
+
+    ProtoWriter ev;
+    if (!key.empty())
+        ev.String(1, key);
+    ev.Varint(3, 1).Message(8, timing);
+
+    ProtoWriter message;
+    message.Message(pressed ? 100 : 101, ev);
+    return message.data();
+}
+
+std::vector<std::uint8_t> LunaInputEncoder::EncodePointerMove(double x_percent, double y_percent)
+{
+    const std::uint64_t now = WallClockMilliseconds();
+    const std::uint64_t prev = pointer_seq_++;
+    const std::uint64_t curr = pointer_seq_;
+
+    ProtoWriter header;
+    header.Varint(10, 2).Varint(20, curr).Varint(30, prev).Varint(40, 0xffffffffu).Varint(50, 3);
+
+    ProtoWriter timing;
+    timing.Varint(1, now).Varint(3, 1).Varint(4, 2).Varint(8, now);
+
+    ProtoWriter move;
+    move.Varint(3, 1).Varint(4, 1)
+        .Double(5, std::clamp(x_percent, 0.0, 100.0))
+        .Double(6, std::clamp(y_percent, 0.0, 100.0))
+        .Message(8, timing);
+
+    ProtoWriter message;
+    message.Message(1, header).Message(35, move);
+    return message.data();
+}
+
+std::vector<std::uint8_t> LunaInputEncoder::EncodePointerButton(bool pressed)
+{
+    const std::uint64_t now = WallClockMilliseconds();
+    const std::uint64_t prev = pointer_seq_++;
+    const std::uint64_t curr = pointer_seq_;
+
+    ProtoWriter header;
+    header.Varint(10, 1).Varint(20, curr).Varint(30, prev).Varint(40, 0xffffffffu).Varint(50, 3);
+
+    ProtoWriter timing;
+    timing.Varint(1, now).Varint(3, 1);
+    if (!pressed)
+        timing.Varint(4, 1);
+    timing.Varint(8, now);
+
+    ProtoWriter btn;
+    btn.Varint(1, 1).Message(8, timing);
+
+    ProtoWriter message;
+    message.Message(1, header).Message(pressed ? 50 : 51, btn);
+    return message.data();
+}
+
 std::vector<std::uint8_t> LunaInputEncoder::EncodeInputReady()
 {
     ProtoWriter message;
