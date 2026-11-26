@@ -214,6 +214,10 @@ public final class MainActivity extends Activity {
     private native String[] nativeSection(int section);
     private native String[] nativeLibraryInfo();
     private native boolean nativeExplore(long generation, boolean force);
+    private native String[] nativeGameDetail(int index);
+    private native boolean nativeSendKey(String key, boolean pressed);
+    private native boolean nativeSendPointerMove(double xPercent, double yPercent);
+    private native boolean nativeSendPointerButton(boolean pressed);
     private native void nativeStart(int index, Surface surface, boolean preferBrazilianPortuguese,
                                     int height, int fps, int bitrateMbps);
     private native int nativeTick(int buttons, float lt, float rt, float lx, float ly, float rx, float ry);
@@ -476,6 +480,7 @@ public final class MainActivity extends Activity {
         if (preserveScroll && homeScroll != null) homeScrollPosition = homeScroll.getScrollY();
         home = true;
         settingsScreen = false;
+        favoritesScreen = false;
         inlineSearch = false;
         grid = null;
         homeRows = rows;
@@ -628,20 +633,97 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private boolean favoritesScreen;
+    private static final String FAVORITES_PREF = "favorite_games";
+
+    private java.util.Set<String> favoriteKeys() {
+        return new java.util.HashSet<>(getPreferences(MODE_PRIVATE)
+            .getStringSet(FAVORITES_PREF, new java.util.HashSet<>()));
+    }
+
+    private boolean isFavorite(String key) {
+        return key != null && !key.isEmpty() && favoriteKeys().contains(key);
+    }
+
+    private boolean toggleFavorite(String key) {
+        if (key == null || key.isEmpty()) return false;
+        java.util.Set<String> favs = favoriteKeys();
+        boolean added;
+        if (favs.contains(key)) {
+            favs.remove(key);
+            added = false;
+        } else {
+            favs.add(key);
+            added = true;
+        }
+        getPreferences(MODE_PRIVATE).edit().putStringSet(FAVORITES_PREF, favs).apply();
+        return added;
+    }
+
+    private void showFavorites() {
+        if (loadingGames) return;
+        inlineSearch = false;
+        favoritesScreen = true;
+        settingsScreen = false;
+        String[] source = homeRows != null && homeRows.length > ALL_GAMES && homeRows[ALL_GAMES] != null
+            ? homeRows[ALL_GAMES] : games;
+        if (source == null || source.length == 0) {
+            loadingGames = true;
+            long token = ++operation;
+            worker.execute(() -> {
+                try {
+                    String[] rows = nativeSection(ALL_GAMES);
+                    post(token, () -> {
+                        loadingGames = false;
+                        if (homeRows != null && homeRows.length > ALL_GAMES) homeRows[ALL_GAMES] = rows;
+                        renderFavoritesFrom(rows);
+                    });
+                } catch (Exception error) {
+                    post(token, () -> {
+                        loadingGames = false;
+                        renderFavoritesFrom(new String[0]);
+                    });
+                }
+            });
+            return;
+        }
+        renderFavoritesFrom(source);
+    }
+
+    private void renderFavoritesFrom(String[] source) {
+        java.util.Set<String> favs = favoriteKeys();
+        java.util.List<String> list = new java.util.ArrayList<>();
+        if (source != null) {
+            for (int i = 0; i + GAME_FIELDS <= source.length; i += GAME_FIELDS) {
+                if (favs.contains(source[i + GAME_KEY])) {
+                    for (int j = 0; j < GAME_FIELDS; j++) list.add(source[i + j]);
+                }
+            }
+        }
+        showLibrary(list.toArray(new String[0]));
+        favoritesScreen = true;
+        if (list.isEmpty() && libraryStatus != null) {
+            libraryStatus.setText("Nenhum jogo favoritado ainda. Abra um jogo e toque no ♥!");
+        }
+    }
+
     private void addBottomBar(LinearLayout page, boolean atHome) {
         LinearLayout bottom = new LinearLayout(this);
         bottom.setPadding(dp(4), dp(5), dp(4), dp(8));
         bottom.setBackgroundColor(0xff171222);
-        bottom.addView(navButton("home", "Início", atHome && !settingsScreen, this::openHome),
+        bottom.addView(navButton("home", "Início", atHome && !settingsScreen && !favoritesScreen, this::openHome),
             new LinearLayout.LayoutParams(0, -2, 1));
         bottom.addView(navButton("search", "Pesquisar", false, this::showLibrarySearch),
             new LinearLayout.LayoutParams(0, -2, 1));
-        bottom.addView(navButton("grid", "Biblioteca", !atHome && !settingsScreen, () -> {
+        bottom.addView(navButton("grid", "Biblioteca", !atHome && !settingsScreen && !favoritesScreen, () -> {
             if (loadingGames) return;
             inlineSearch = false;
+            favoritesScreen = false;
             loadSection(ALL_GAMES);
         }), new LinearLayout.LayoutParams(0, -2, 1));
-        bottom.addView(navButton("settings", "Ajustes", settingsScreen, this::showSettings),
+        bottom.addView(navButton("heart", "Favoritos", favoritesScreen, this::showFavorites),
+            new LinearLayout.LayoutParams(0, -2, 1));
+        bottom.addView(navButton("settings", "Ajustes", settingsScreen && !favoritesScreen, this::showSettings),
             new LinearLayout.LayoutParams(0, -2, 1));
         page.addView(bottom, new LinearLayout.LayoutParams(-1, -2));
     }
@@ -758,6 +840,17 @@ public final class MainActivity extends Activity {
             canvas.save();
             canvas.scale(getWidth() / 24f, getHeight() / 24f);
             switch (name) {
+                case "heart":
+                    path.reset();
+                    path.moveTo(12, 20.2f);
+                    path.cubicTo(12, 20.2f, 4, 14.8f, 4, 9.2f);
+                    path.cubicTo(4, 6.2f, 6.4f, 4.2f, 8.9f, 4.2f);
+                    path.cubicTo(10.5f, 4.2f, 11.5f, 5.1f, 12, 6.1f);
+                    path.cubicTo(12.5f, 5.1f, 13.5f, 4.2f, 15.1f, 4.2f);
+                    path.cubicTo(17.6f, 4.2f, 20, 6.2f, 20, 9.2f);
+                    path.cubicTo(20, 14.8f, 12, 20.2f, 12, 20.2f);
+                    canvas.drawPath(path, paint);
+                    break;
                 case "grid":
                     for (int y = 4; y <= 13; y += 9)
                         for (int x = 4; x <= 13; x += 9)
@@ -1096,7 +1189,7 @@ public final class MainActivity extends Activity {
         String[] snapshot = homeRows[source];
         for (int i = 0; i < snapshot.length; i += GAME_FIELDS) {
             if (!key.equals(snapshot[i + GAME_KEY])) continue;
-            showLaunchDialog(snapshot, i, () -> resolveHomeLaunch(source, key));
+            resolveHomeLaunch(source, key);
             return;
         }
     }
@@ -1172,7 +1265,7 @@ public final class MainActivity extends Activity {
                     for (int offset = 0; offset < rows.length; offset += GAME_FIELDS) {
                         if (!key.equals(rows[offset + GAME_KEY])) continue;
                         games = rows;
-                        showPlayer(offset / GAME_FIELDS);
+                        showGameDetail(offset / GAME_FIELDS);
                         return;
                     }
                     libraryStatus.setText("Este jogo não está mais disponível.");
@@ -1189,6 +1282,7 @@ public final class MainActivity extends Activity {
     private void showLibrary(String[] library) {
         home = false;
         settingsScreen = false;
+        favoritesScreen = false;
         games = library;
         loadingGames = false;
         libraryVisible = true;
@@ -1312,6 +1406,7 @@ public final class MainActivity extends Activity {
     private void showSettings() {
         if (loadingGames) return;
         settingsScreen = true;
+        favoritesScreen = false;
         libraryVisible = true;
         grid = null;
         LinearLayout page = libraryPage();
@@ -1626,22 +1721,10 @@ public final class MainActivity extends Activity {
     }
 
     private void launchSelection() {
-        if (!libraryVisible || home || settingsScreen || loadingGames || games.length == 0) return;
-        int offset = selection * GAME_FIELDS;
-        String key = games[offset + GAME_KEY];
-        long token = operation;
-        showLaunchDialog(games, offset, () -> {
-            if (isCancelled(token) || !libraryVisible || home || settingsScreen) return;
-            // Catalog updates can reorder games while the launch dialog is open.
-            for (int i = 0; i < games.length; i += GAME_FIELDS) {
-                if (key.equals(games[i + GAME_KEY])) {
-                    if (!loadingGames) showPlayer(i / GAME_FIELDS);
-                    else libraryStatus.setText("A biblioteca está atualizando. Tente de novo.");
-                    return;
-                }
-            }
-            libraryStatus.setText("Este jogo não está mais disponível.");
-        });
+        if (!libraryVisible || home || settingsScreen || loadingGames || games == null || games.length == 0) return;
+        if (selection >= 0 && selection * GAME_FIELDS + GAME_FIELDS <= games.length) {
+            showGameDetail(selection);
+        }
     }
 
     private void loadGames(String query) {
@@ -2029,6 +2112,258 @@ public final class MainActivity extends Activity {
     private static final int TOUCH_LT = 0x10000;
     private static final int TOUCH_RT = 0x20000;
 
+    private View gameDetailOverlay;
+    private boolean favoritesDirty;
+
+    private void closeGameDetail() {
+        android.view.ViewGroup host = (android.view.ViewGroup) findViewById(android.R.id.content);
+        if (gameDetailOverlay == null || host == null) return;
+        View overlay = gameDetailOverlay;
+        gameDetailOverlay = null;
+        boolean refreshFavs = favoritesDirty;
+        favoritesDirty = false;
+        overlay.animate().alpha(0f).translationY(dp(36)).setDuration(180)
+            .withEndAction(() -> {
+                host.removeView(overlay);
+                if (refreshFavs && favoritesScreen && player == null) showFavorites();
+            }).start();
+    }
+
+    private void showGameDetail(int index) {
+        if (games == null || index < 0 || index * GAME_FIELDS + GAME_FIELDS > games.length) return;
+        closeGameDetail();
+        int base = index * GAME_FIELDS;
+        String initialTitle = games[base];
+        String initialPortrait = games[base + 2];
+        String initialLandscape = games[base + 3];
+
+        FrameLayout overlay = new FrameLayout(this);
+        overlay.setBackgroundColor(0xff0b0a10);
+        overlay.setClickable(true);
+        gameDetailOverlay = overlay;
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(16), dp(12), dp(16), dp(28));
+
+        // Top bar
+        LinearLayout topBar = new LinearLayout(this);
+        topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
+        topBar.setPadding(0, dp(4), 0, dp(14));
+        TextView backBtn = text("←", 20, Color.WHITE);
+        backBtn.setPadding(dp(4), dp(4), dp(14), dp(4));
+        backBtn.setOnClickListener(v -> closeGameDetail());
+        TextView brand = text("LunaNX", 18, Color.WHITE);
+        brand.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        LinearLayout.LayoutParams brandLp = new LinearLayout.LayoutParams(0, -2, 1f);
+        final String gameKey = games[base + GAME_KEY];
+        boolean initialFav = isFavorite(gameKey);
+        TextView favTop = text(initialFav ? "♥" : "♡", 20, initialFav ? 0xfff43f5e : 0xffe2e8f0);
+        favTop.setPadding(dp(10), dp(4), dp(10), dp(4));
+        TextView moreTop = text("⋮", 20, 0xffe2e8f0);
+        moreTop.setPadding(dp(8), dp(4), dp(4), dp(4));
+        topBar.addView(backBtn);
+        topBar.addView(brand, brandLp);
+        topBar.addView(favTop);
+        topBar.addView(moreTop);
+        body.addView(topBar);
+
+        // Banner horizontal
+        FrameLayout bannerWrap = new FrameLayout(this);
+        ImageView banner = coverView(initialLandscape != null && !initialLandscape.isEmpty() ? initialLandscape : initialPortrait, 16);
+        bannerWrap.addView(banner, new FrameLayout.LayoutParams(-1, dp(170)));
+        TextView playCircle = text("▶", 18, Color.WHITE);
+        playCircle.setGravity(Gravity.CENTER);
+        playCircle.setBackground(rounded(0x99000000, 100));
+        bannerWrap.addView(playCircle, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
+        bannerWrap.setOnClickListener(v -> {
+            closeGameDetail();
+            showPlayer(index);
+        });
+        body.addView(bannerWrap, new LinearLayout.LayoutParams(-1, dp(170)));
+
+        // Capa + Título + Publisher + Badge
+        LinearLayout headerRow = new LinearLayout(this);
+        headerRow.setOrientation(LinearLayout.HORIZONTAL);
+        headerRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams hLp = new LinearLayout.LayoutParams(-1, -2);
+        hLp.topMargin = dp(16);
+        ImageView poster = coverView(initialPortrait, 14);
+        headerRow.addView(poster, new LinearLayout.LayoutParams(dp(92), dp(122)));
+
+        LinearLayout infoCol = new LinearLayout(this);
+        infoCol.setOrientation(LinearLayout.VERTICAL);
+        infoCol.setPadding(dp(14), 0, 0, 0);
+        TextView titleView = text(initialTitle, 20, Color.WHITE);
+        titleView.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        TextView pubSub = text("Carregando detalhes…", 13, 0xff94a3b8);
+        pubSub.setPadding(0, dp(4), 0, dp(2));
+        TextView genreSub = text("", 12, 0xff94a3b8);
+        TextView badge = text("👑 Premium", 11, 0xffe9d5ff);
+        badge.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        badge.setPadding(dp(10), dp(4), dp(10), dp(4));
+        badge.setBackground(rounded(0xff3b235a, 100));
+        badge.setVisibility(View.GONE);
+        LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(-2, -2);
+        bLp.topMargin = dp(8);
+        infoCol.addView(titleView);
+        infoCol.addView(pubSub);
+        infoCol.addView(genreSub);
+        infoCol.addView(badge, bLp);
+        headerRow.addView(infoCol, new LinearLayout.LayoutParams(0, -2, 1f));
+        body.addView(headerRow, hLp);
+
+        // Barra de ação: ▶ Iniciar + ☁ + ♡
+        LinearLayout actionRow = new LinearLayout(this);
+        actionRow.setOrientation(LinearLayout.HORIZONTAL);
+        actionRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams aLp = new LinearLayout.LayoutParams(-1, -2);
+        aLp.topMargin = dp(16);
+
+        TextView startBtn = text("▶  Iniciar", 15, 0xff161124);
+        startBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        startBtn.setGravity(Gravity.CENTER);
+        startBtn.setBackground(rounded(0xffc4b5fd, 100));
+        startBtn.setOnClickListener(v -> {
+            animateTap(startBtn);
+            closeGameDetail();
+            showPlayer(index);
+        });
+        actionRow.addView(startBtn, new LinearLayout.LayoutParams(0, dp(46), 1f));
+
+        FrameLayout cloudBtn = new FrameLayout(this);
+        cloudBtn.setBackground(rounded(0xff1e1b29, 100));
+        cloudBtn.addView(new HudIconView(this, "cloud", Color.WHITE, dp(1.6f)), new FrameLayout.LayoutParams(-1, -1));
+        cloudBtn.setOnClickListener(v -> {
+            animateTap(cloudBtn);
+            showFramingSettings();
+        });
+        LinearLayout.LayoutParams cLp = new LinearLayout.LayoutParams(dp(46), dp(46));
+        cLp.setMarginStart(dp(10));
+        actionRow.addView(cloudBtn, cLp);
+
+        TextView heartBtn = text(initialFav ? "♥" : "♡", 17, initialFav ? 0xfff43f5e : Color.WHITE);
+        heartBtn.setGravity(Gravity.CENTER);
+        heartBtn.setBackground(rounded(0xff1e1b29, 100));
+        Runnable syncFav = () -> {
+            boolean nowFav = toggleFavorite(gameKey);
+            favTop.setText(nowFav ? "♥" : "♡");
+            favTop.setTextColor(nowFav ? 0xfff43f5e : 0xffe2e8f0);
+            heartBtn.setText(nowFav ? "♥" : "♡");
+            heartBtn.setTextColor(nowFav ? 0xfff43f5e : Color.WHITE);
+            if (favoritesScreen) favoritesDirty = true;
+        };
+        favTop.setOnClickListener(v -> { animateTap(favTop); syncFav.run(); });
+        heartBtn.setOnClickListener(v -> { animateTap(heartBtn); syncFav.run(); });
+        actionRow.addView(heartBtn, cLp);
+        body.addView(actionRow, aLp);
+
+        // Sinopse
+        TextView synopsis = text("", 13, 0xffcbd5e1);
+        synopsis.setPadding(0, dp(16), 0, dp(14));
+        synopsis.setLineSpacing(dp(3), 1f);
+        body.addView(synopsis);
+
+        // Card de Metadados
+        LinearLayout metaCard = new LinearLayout(this);
+        metaCard.setOrientation(LinearLayout.VERTICAL);
+        metaCard.setPadding(dp(14), dp(14), dp(14), dp(14));
+        GradientDrawable metaBg = rounded(0xff15121e, 16);
+        metaBg.setStroke(dp(1), 0x1affffff);
+        metaCard.setBackground(metaBg);
+
+        LinearLayout pubDevRow = new LinearLayout(this);
+        pubDevRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout pubCol = new LinearLayout(this);
+        pubCol.setOrientation(LinearLayout.VERTICAL);
+        pubCol.addView(text("Publicadora", 11, 0xff94a3b8));
+        TextView pubVal = text("—", 12, Color.WHITE);
+        pubCol.addView(pubVal);
+        LinearLayout devCol = new LinearLayout(this);
+        devCol.setOrientation(LinearLayout.VERTICAL);
+        devCol.addView(text("Desenvolvedora", 11, 0xff94a3b8));
+        TextView devVal = text("—", 12, Color.WHITE);
+        devCol.addView(devVal);
+        pubDevRow.addView(pubCol, new LinearLayout.LayoutParams(0, -2, 1f));
+        pubDevRow.addView(devCol, new LinearLayout.LayoutParams(0, -2, 1f));
+        metaCard.addView(pubDevRow);
+
+        TextView genresTitle = text("Gêneros", 11, 0xff94a3b8);
+        genresTitle.setPadding(0, dp(12), 0, dp(6));
+        metaCard.addView(genresTitle);
+        LinearLayout chipsRow = new LinearLayout(this);
+        chipsRow.setOrientation(LinearLayout.HORIZONTAL);
+        metaCard.addView(chipsRow);
+
+        LinearLayout ratingRow = new LinearLayout(this);
+        ratingRow.setOrientation(LinearLayout.HORIZONTAL);
+        ratingRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams rLp = new LinearLayout.LayoutParams(-1, -2);
+        rLp.topMargin = dp(12);
+        TextView ratingBadge = text("L", 13, Color.WHITE);
+        ratingBadge.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        ratingBadge.setGravity(Gravity.CENTER);
+        ratingBadge.setBackground(rounded(0xffeab308, 6));
+        ratingRow.addView(ratingBadge, new LinearLayout.LayoutParams(dp(28), dp(28)));
+        LinearLayout ratingTextCol = new LinearLayout(this);
+        ratingTextCol.setOrientation(LinearLayout.VERTICAL);
+        ratingTextCol.setPadding(dp(10), 0, 0, 0);
+        ratingTextCol.addView(text("Classificação indicativa", 12, Color.WHITE));
+        TextView ratingDesc = text("Consultando classificação…", 11, 0xff94a3b8);
+        ratingTextCol.addView(ratingDesc);
+        ratingRow.addView(ratingTextCol);
+        metaCard.addView(ratingRow, rLp);
+
+        body.addView(metaCard);
+        scroll.addView(body);
+        overlay.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+
+        overlay.setAlpha(0f);
+        overlay.setTranslationY(dp(36));
+        ((android.view.ViewGroup) findViewById(android.R.id.content)).addView(overlay, new FrameLayout.LayoutParams(-1, -1));
+        overlay.animate().alpha(1f).translationY(0f).setDuration(240)
+            .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
+
+        worker.execute(() -> {
+            String[] d = nativeGameDetail(index);
+            if (d == null || d.length < 10) return;
+            runOnUiThread(() -> {
+                if (gameDetailOverlay != overlay) return;
+                if (!d[0].isEmpty()) titleView.setText(d[0]);
+                pubSub.setText(d[1].isEmpty() ? "Amazon Luna" : d[1]);
+                genreSub.setText(d[5]);
+                if ("1".equals(d[9]) || !d[8].isEmpty()) {
+                    badge.setText("👑 " + (d[8].isEmpty() ? "Premium" : d[8]));
+                    badge.setVisibility(View.VISIBLE);
+                }
+                synopsis.setText(d[3].isEmpty() ? "Sem sinopse disponível para este título." : d[3]);
+                pubVal.setText(d[1].isEmpty() ? "—" : d[1]);
+                devVal.setText(d[2].isEmpty() ? "—" : d[2]);
+                chipsRow.removeAllViews();
+                for (String g : d[5].split(",")) {
+                    String trimmed = g.trim();
+                    if (trimmed.isEmpty() || chipsRow.getChildCount() >= 4) continue;
+                    TextView chip = text(trimmed, 11, 0xffe2e8f0);
+                    chip.setPadding(dp(10), dp(4), dp(10), dp(4));
+                    GradientDrawable cBg = rounded(0xff1e1b29, 100);
+                    cBg.setStroke(dp(1), 0x22ffffff);
+                    chip.setBackground(cBg);
+                    LinearLayout.LayoutParams chLp = new LinearLayout.LayoutParams(-2, -2);
+                    chLp.setMarginEnd(dp(6));
+                    chipsRow.addView(chip, chLp);
+                }
+                String age = d[4].isEmpty() ? "Livre" : d[4];
+                ratingBadge.setText(age.length() > 3 ? age.substring(0, 2) : age);
+                ratingDesc.setText(age);
+                if (!d[7].isEmpty()) bindCover(banner, d[7]);
+                if (!d[6].isEmpty()) bindCover(poster, d[6]);
+            });
+        });
+    }
+
     private void showPlayer(int index) {
         libraryVisible = false;
         catalogPaused = true;
@@ -2120,15 +2455,25 @@ public final class MainActivity extends Activity {
         GestureDetector gestures = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent event) { return true; }
             @Override public boolean onSingleTapConfirmed(MotionEvent event) {
-                if (player == current && !launching) revealPlayerShortcuts();
+                if (player != current || launching) return true;
+                if (activeHudCard != null) {
+                    closeActiveHudCard();
+                } else if (!cleanScreenMode) {
+                    revealPlayerShortcuts();
+                }
                 return true;
             }
             @Override public boolean onDoubleTap(MotionEvent event) {
-                if (player == current) showPlayerMenu();
+                if (player == current && !launching && !cleanScreenMode) toggleSettingsCard(current);
                 return true;
             }
         });
-        current.setOnTouchListener((view, event) -> gestures.onTouchEvent(event));
+        current.setOnTouchListener((view, event) -> {
+            if (player == current && !launching && directTouchEnabled && !gamepadConnected && activeHudCard == null) {
+                dispatchDirectTouch(event);
+            }
+            return gestures.onTouchEvent(event);
+        });
         streamStatus = text("", 16, Color.WHITE);
         streamStatus.setVisibility(View.GONE);
         streamStatus.setGravity(Gravity.CENTER);
@@ -2139,17 +2484,56 @@ public final class MainActivity extends Activity {
         controls = touchOverlay();
         current.addView(controls, new FrameLayout.LayoutParams(-1, -1));
 
-        TextView menu = playerShortcut("⋯", "Abrir menu do player", this::showPlayerMenu);
-        menu.setTextSize(21);
-        playerMenuButton = menu;
-        current.addView(menu, floating(dp(44), dp(44), Gravity.TOP | Gravity.START, 10));
-        showTouchButton = playerShortcut("Controles", "Mostrar controles virtuais", () -> {
-            touchControlsOverride = true;
+        FrameLayout backBtn = playerCircleVectorIcon("back", false, "Sair do jogo", () -> leavePlayer(false));
+        playerMenuButton = backBtn;
+        current.addView(backBtn, floating(dp(42), dp(42), Gravity.TOP | Gravity.START, 14));
+
+        LinearLayout pillWrap = new LinearLayout(this);
+        pillWrap.setOrientation(LinearLayout.HORIZONTAL);
+        pillWrap.setGravity(Gravity.CENTER_VERTICAL);
+        pillWrap.setPadding(dp(12), dp(6), dp(14), dp(6));
+        GradientDrawable pillBg = rounded(0x8814161a, 100);
+        pillBg.setStroke(dp(1), 0x33ffffff);
+        pillWrap.setBackground(pillBg);
+        HudIconView cloudIcon = new HudIconView(this, "cloud", 0xffeef2f6, dp(1.5f));
+        pillWrap.addView(cloudIcon, new LinearLayout.LayoutParams(dp(20), dp(20)));
+        hudPill = text("Cloud Gaming  •  ● Jogando", 13, 0xffeef2f6);
+        hudPill.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        hudPill.setPadding(dp(8), 0, 0, 0);
+        pillWrap.addView(hudPill);
+        hudPillWrap = pillWrap;
+        current.addView(pillWrap, floating(-2, dp(38), Gravity.TOP | Gravity.CENTER_HORIZONTAL, 16));
+
+        LinearLayout rightHud = new LinearLayout(this);
+        rightHud.setOrientation(LinearLayout.HORIZONTAL);
+        rightHud.setGravity(Gravity.CENTER_VERTICAL);
+        FrameLayout padWrap = playerCircleVectorIcon("gamepad", gamepadConnected || touchControlsEnabled(), "Mostrar ou ocultar controles", () -> {
+            touchControlsOverride = !touchControlsEnabled();
             updatePlayerOverlays();
+            syncHudIndicators();
         });
-        FrameLayout.LayoutParams touchPosition = floating(-2, dp(44), Gravity.TOP | Gravity.START, 10);
-        touchPosition.setMarginStart(dp(60));
-        current.addView(showTouchButton, touchPosition);
+        padHudIcon = (HudIconView) padWrap.getChildAt(0);
+        showTouchButton = padWrap;
+
+        FrameLayout touchWrap = playerCircleVectorIcon("pointer", directTouchEnabled && !gamepadConnected, "Ativar ou desativar toque tátil", () -> {
+            directTouchEnabled = !directTouchEnabled;
+            syncHudIndicators();
+        });
+        touchHudIcon = (HudIconView) touchWrap.getChildAt(0);
+
+        FrameLayout keyBtn = playerCircleVectorIcon("keyboard", false, "Abrir ou fechar teclado", () -> toggleKeyboardBar(current));
+        keyHudIcon = (HudIconView) keyBtn.getChildAt(0);
+        FrameLayout castBtn = playerCircleVectorIcon("screen", false, "Tela e Enquadramento", () -> toggleFramingCard(current));
+        FrameLayout gearBtn = playerCircleVectorIcon("gear", false, "Ajustes do player", () -> toggleSettingsCard(current));
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(42), dp(42));
+        iconLp.setMarginStart(dp(8));
+        rightHud.addView(padWrap, new FrameLayout.LayoutParams(dp(42), dp(42)));
+        rightHud.addView(touchWrap, iconLp);
+        rightHud.addView(keyBtn, iconLp);
+        rightHud.addView(castBtn, iconLp);
+        rightHud.addView(gearBtn, iconLp);
+        hudRightBar = rightHud;
+        current.addView(rightHud, floating(-2, dp(42), Gravity.TOP | Gravity.END, 14));
 
         metrics = new LinearLayout(this);
         metrics.setOrientation(LinearLayout.VERTICAL);
@@ -2171,7 +2555,9 @@ public final class MainActivity extends Activity {
         metrics.setContentDescription("Métricas da transmissão. Toque para alternar os detalhes.");
         metrics.setOnClickListener(view -> metricDetails.setVisibility(
             metricDetails.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
-        current.addView(metrics, floating(dp(282), -2, Gravity.TOP | Gravity.END, 12));
+        FrameLayout.LayoutParams metricsLp = floating(dp(282), -2, Gravity.TOP | Gravity.END, 14);
+        metricsLp.topMargin = dp(64);
+        current.addView(metrics, metricsLp);
 
         addLaunchPanel(current);
         updatePlayerOverlays();
@@ -2253,6 +2639,526 @@ public final class MainActivity extends Activity {
         button.setPadding(dp(12), dp(4), dp(12), dp(4));
         applyPlayerButtonStyle(button, false);
         return button;
+    }
+
+    private View activeHudCard;
+    private View hudPillWrap;
+    private View hudRightBar;
+    private int activeSettingsTab;
+    private boolean cleanScreenMode;
+    private boolean directTouchEnabled = true;
+    private TextView hudPill;
+    private HudIconView padHudIcon;
+    private HudIconView touchHudIcon;
+    private HudIconView keyHudIcon;
+
+    private void syncHudIndicators() {
+        if (padHudIcon != null) padHudIcon.setGreenDot(gamepadConnected || touchControlsEnabled());
+        if (touchHudIcon != null) touchHudIcon.setGreenDot(directTouchEnabled && !gamepadConnected);
+        if (keyHudIcon != null) keyHudIcon.setGreenDot(activeHudCard != null && "keyboard".equals(activeHudCard.getTag()));
+    }
+
+    private void dispatchDirectTouch(MotionEvent event) {
+        if (player == null || playerSurface == null) return;
+        int w = playerSurface.getWidth();
+        int h = playerSurface.getHeight();
+        if (w <= 0 || h <= 0) return;
+        float sx = playerSurface.getScaleX() <= 0 ? 1f : playerSurface.getScaleX();
+        float sy = playerSurface.getScaleY() <= 0 ? 1f : playerSurface.getScaleY();
+        float vw = w * sx;
+        float vh = h * sy;
+        float left = (player.getWidth() - vw) / 2f;
+        float top = (player.getHeight() - vh) / 2f;
+        final double xPct = Math.max(0.0, Math.min(100.0, (event.getX() - left) * 100.0 / vw));
+        final double yPct = Math.max(0.0, Math.min(100.0, (event.getY() - top) * 100.0 / vh));
+        int action = event.getActionMasked();
+        worker.execute(() -> {
+            if (action == MotionEvent.ACTION_DOWN) {
+                nativeSendPointerMove(xPct, yPct);
+                nativeSendPointerButton(true);
+            } else if (action == MotionEvent.ACTION_MOVE) {
+                nativeSendPointerMove(xPct, yPct);
+            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                nativeSendPointerMove(xPct, yPct);
+                nativeSendPointerButton(false);
+            }
+        });
+    }
+
+    private void animateTap(View v) {
+        v.animate().scaleX(0.88f).scaleY(0.88f).setDuration(80).withEndAction(() ->
+            v.animate().scaleX(1f).scaleY(1f).setDuration(140)
+                .setInterpolator(new android.view.animation.OvershootInterpolator(2f)).start()
+        ).start();
+    }
+
+    private void closeActiveHudCard() {
+        if (activeHudCard == null || player == null) return;
+        View card = activeHudCard;
+        activeHudCard = null;
+        if ("keyboard".equals(card.getTag())) {
+            android.view.inputmethod.InputMethodManager imm =
+                (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null) imm.hideSoftInputFromWindow(card.getWindowToken(), 0);
+            card.clearFocus();
+            enterPlayerFullscreen();
+        }
+        syncHudIndicators();
+        card.animate().alpha(0f).translationY(-dp(12)).scaleX(0.95f).scaleY(0.95f)
+            .setDuration(160).withEndAction(() -> {
+                if (player != null) player.removeView(card);
+            }).start();
+    }
+
+    private void sendKeyTap(String key) {
+        if (key == null || key.isEmpty()) return;
+        worker.execute(() -> {
+            nativeSendKey(key, true);
+            nativeSendKey(key, false);
+        });
+    }
+
+    private void toggleKeyboardBar(FrameLayout host) {
+        if (activeHudCard != null && "keyboard".equals(activeHudCard.getTag())) {
+            closeActiveHudCard();
+            return;
+        }
+        LinearLayout bar = new LinearLayout(this);
+        bar.setTag("keyboard");
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(12), dp(8), dp(12), dp(8));
+        GradientDrawable bg = rounded(0xeb14161a, 18);
+        bg.setStroke(dp(1), 0x28ffffff);
+        bar.setBackground(bg);
+
+        android.widget.EditText input = new android.widget.EditText(this);
+        input.setHint("Digite para enviar ao jogo…");
+        input.setHintTextColor(0xff94a3b8);
+        input.setTextColor(Color.WHITE);
+        input.setTextSize(14);
+        input.setSingleLine(true);
+        input.setBackgroundColor(Color.TRANSPARENT);
+        input.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEND);
+        final String[] prev = {""};
+        input.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override public void afterTextChanged(android.text.Editable s) {
+                String cur = s.toString();
+                if (cur.length() > prev[0].length()) {
+                    String added = cur.substring(prev[0].length());
+                    for (int i = 0; i < added.length(); i++) {
+                        sendKeyTap(String.valueOf(added.charAt(i)));
+                    }
+                } else if (cur.length() < prev[0].length()) {
+                    int diff = prev[0].length() - cur.length();
+                    for (int i = 0; i < diff; i++) sendKeyTap("Backspace");
+                }
+                prev[0] = cur;
+            }
+        });
+        input.setOnEditorActionListener((v, actionId, event) -> {
+            sendKeyTap("Enter");
+            input.setText("");
+            prev[0] = "";
+            return true;
+        });
+        bar.addView(input, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView enterBtn = text("Enter", 12, Color.WHITE);
+        enterBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        enterBtn.setPadding(dp(10), dp(6), dp(10), dp(6));
+        enterBtn.setBackground(rounded(0xff2563eb, 10));
+        enterBtn.setOnClickListener(v -> {
+            animateTap(enterBtn);
+            sendKeyTap("Enter");
+        });
+        bar.addView(enterBtn);
+
+        TextView closeBtn = text("✕", 14, 0xff94a3b8);
+        closeBtn.setPadding(dp(10), dp(6), dp(4), dp(6));
+        closeBtn.setOnClickListener(v -> {
+            android.view.inputmethod.InputMethodManager imm =
+                (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null) imm.hideSoftInputFromWindow(input.getWindowToken(), 0);
+            closeActiveHudCard();
+        });
+        bar.addView(closeBtn);
+
+        showHudCard(host, bar, 340);
+        input.requestFocus();
+        input.post(() -> {
+            android.view.inputmethod.InputMethodManager imm =
+                (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null) imm.showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT);
+        });
+    }
+
+    private void showHudCard(FrameLayout host, View card, int widthDp) {
+        closeActiveHudCard();
+        activeHudCard = card;
+        syncHudIndicators();
+        card.setAlpha(0f);
+        card.setTranslationY(-dp(14));
+        card.setScaleX(0.94f);
+        card.setScaleY(0.94f);
+        FrameLayout.LayoutParams lp = floating(dp(widthDp), -2, Gravity.TOP | Gravity.END, 14);
+        lp.topMargin = dp(64);
+        host.addView(card, lp);
+        card.animate().alpha(1f).translationY(0f).scaleX(1f).scaleY(1f)
+            .setDuration(220).setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
+    }
+
+    private void toggleCleanScreen(FrameLayout host) {
+        cleanScreenMode = !cleanScreenMode;
+        float target = cleanScreenMode ? 0f : 1f;
+        int vis = cleanScreenMode ? View.GONE : View.VISIBLE;
+        if (controls != null) {
+            if (!cleanScreenMode && touchControlsEnabled()) controls.setVisibility(View.VISIBLE);
+            controls.animate().alpha(target).setDuration(200)
+                .withEndAction(() -> { if (cleanScreenMode && controls != null) controls.setVisibility(View.GONE); }).start();
+        }
+        View[] hudViews = {playerMenuButton, hudPillWrap, hudRightBar};
+        for (View hv : hudViews) {
+            if (hv == null) continue;
+            if (!cleanScreenMode) hv.setVisibility(View.VISIBLE);
+            hv.animate().alpha(target).setDuration(200)
+                .withEndAction(() -> { if (cleanScreenMode) hv.setVisibility(View.GONE); }).start();
+        }
+        closeActiveHudCard();
+        if (!cleanScreenMode) revealPlayerShortcuts();
+    }
+
+    private void toggleFramingCard(FrameLayout host) {
+        if (activeHudCard != null && "framing".equals(activeHudCard.getTag())) {
+            closeActiveHudCard();
+            return;
+        }
+        LinearLayout card = new LinearLayout(this);
+        card.setTag("framing");
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(16), dp(10), dp(16), dp(16));
+        GradientDrawable bg = rounded(0xeb14161a, 22);
+        bg.setStroke(dp(1), 0x28ffffff);
+        card.setBackground(bg);
+
+        View handle = new View(this);
+        handle.setBackground(rounded(0x44ffffff, 100));
+        LinearLayout.LayoutParams hLp = new LinearLayout.LayoutParams(dp(34), dp(4));
+        hLp.gravity = Gravity.CENTER_HORIZONTAL;
+        hLp.bottomMargin = dp(10);
+        card.addView(handle, hLp);
+
+        TextView title = text("Tela e Enquadramento", 15, Color.WHITE);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        card.addView(title);
+
+        TextView sub = text("Modo de enquadramento", 12, 0xff9aa0a6);
+        sub.setPadding(0, dp(12), 0, dp(6));
+        card.addView(sub);
+
+        PlayerFraming[] modes = PlayerFraming.values();
+        for (int i = 0; i < modes.length; i++) {
+            final PlayerFraming m = modes[i];
+            boolean selected = playerFraming == m;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(12), dp(10), dp(12), dp(10));
+            if (selected) row.setBackground(rounded(0x26ffffff, 12));
+            TextView lbl = text(m.name(), 13, selected ? Color.WHITE : 0xffcfd4dc);
+            LinearLayout.LayoutParams lLp = new LinearLayout.LayoutParams(0, -2, 1f);
+            row.addView(lbl, lLp);
+            if (selected) {
+                TextView chk = text("✓", 14, 0xff22c55e);
+                chk.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                row.addView(chk);
+            }
+            row.setOnClickListener(v -> {
+                playerFraming = m;
+                updateFraming();
+                toggleFramingCard(host);
+            });
+            card.addView(row);
+        }
+
+        View div = new View(this);
+        div.setBackgroundColor(0x22ffffff);
+        LinearLayout.LayoutParams dLp = new LinearLayout.LayoutParams(-1, dp(1));
+        dLp.setMargins(0, dp(10), 0, dp(10));
+        card.addView(div, dLp);
+
+        card.addView(hudToggleRow("Tela limpa (ocultar HUD)", cleanScreenMode, () -> toggleCleanScreen(host)));
+        showHudCard(host, card, 270);
+    }
+
+    private void toggleSettingsCard(FrameLayout host) {
+        if (activeHudCard != null && "settings".equals(activeHudCard.getTag())) {
+            closeActiveHudCard();
+            return;
+        }
+        LinearLayout card = new LinearLayout(this);
+        card.setTag("settings");
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setPadding(dp(12), dp(14), dp(14), dp(14));
+        GradientDrawable bg = rounded(0xeb14161a, 22);
+        bg.setStroke(dp(1), 0x28ffffff);
+        card.setBackground(bg);
+
+        LinearLayout sidebar = new LinearLayout(this);
+        sidebar.setOrientation(LinearLayout.VERTICAL);
+        TextView back = text("‹  Ajustes", 14, Color.WHITE);
+        back.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        back.setPadding(dp(8), dp(4), dp(8), dp(12));
+        back.setOnClickListener(v -> closeActiveHudCard());
+        sidebar.addView(back);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(14), dp(4), dp(4), dp(4));
+
+        String[] tabs = {"Geral", "Controle", "Vídeo", "Sobre"};
+        final Runnable[] refreshTab = new Runnable[1];
+        Runnable[] loaders = {
+            () -> {
+                content.removeAllViews();
+                TextView h = text("Geral", 14, Color.WHITE);
+                h.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                h.setPadding(0, 0, 0, dp(8));
+                content.addView(h);
+                content.addView(hudToggleRow("Estatísticas (FPS, latência)", showMetrics, () -> {
+                    showMetrics = !showMetrics;
+                    updatePlayerOverlays();
+                    refreshTab[0].run();
+                }));
+                content.addView(hudToggleRow("Tela limpa (ocultar HUD)", cleanScreenMode, () -> toggleCleanScreen(host)));
+                TextView exitBtn = text("Sair do jogo", 13, 0xfffca5a5);
+                exitBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                exitBtn.setGravity(Gravity.CENTER);
+                exitBtn.setPadding(dp(12), dp(10), dp(12), dp(10));
+                GradientDrawable exitBg = rounded(0x33ef4444, 12);
+                exitBg.setStroke(dp(1), 0x55ef4444);
+                exitBtn.setBackground(exitBg);
+                LinearLayout.LayoutParams exLp = new LinearLayout.LayoutParams(-1, -2);
+                exLp.topMargin = dp(12);
+                exitBtn.setOnClickListener(v -> {
+                    closeActiveHudCard();
+                    leavePlayer(false);
+                });
+                content.addView(exitBtn, exLp);
+            },
+            () -> {
+                content.removeAllViews();
+                TextView h = text("Controle", 14, Color.WHITE);
+                h.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                h.setPadding(0, 0, 0, dp(8));
+                content.addView(h);
+                content.addView(hudToggleRow("Controles virtuais", touchControlsEnabled(), () -> {
+                    touchControlsOverride = !touchControlsEnabled();
+                    updatePlayerOverlays();
+                    syncHudIndicators();
+                    refreshTab[0].run();
+                }));
+                content.addView(hudToggleRow("Toque tátil na tela", directTouchEnabled && !gamepadConnected, () -> {
+                    directTouchEnabled = !directTouchEnabled;
+                    syncHudIndicators();
+                    refreshTab[0].run();
+                }));
+            },
+            () -> {
+                content.removeAllViews();
+                TextView h = text("Vídeo", 14, Color.WHITE);
+                h.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                h.setPadding(0, 0, 0, dp(8));
+                content.addView(h);
+                TextView fBtn = text("Enquadramento: " + playerFraming.name(), 13, 0xffeef2f6);
+                fBtn.setPadding(dp(10), dp(10), dp(10), dp(10));
+                fBtn.setBackground(rounded(0x22ffffff, 10));
+                fBtn.setOnClickListener(v -> toggleFramingCard(host));
+                content.addView(fBtn);
+            },
+            () -> {
+                content.removeAllViews();
+                TextView h = text("Sobre", 14, Color.WHITE);
+                h.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                h.setPadding(0, 0, 0, dp(8));
+                content.addView(h);
+                content.addView(text("LunaNX Android\nFork GPL-3.0", 12, 0xff9aa0a6));
+            }
+        };
+        refreshTab[0] = () -> loaders[activeSettingsTab].run();
+
+        for (int i = 0; i < tabs.length; i++) {
+            final int idx = i;
+            TextView tab = text(tabs[i], 13, i == activeSettingsTab ? Color.WHITE : 0xff9aa0a6);
+            tab.setPadding(dp(10), dp(8), dp(10), dp(8));
+            if (i == activeSettingsTab) tab.setBackground(rounded(0x26ffffff, 100));
+            tab.setOnClickListener(v -> {
+                activeSettingsTab = idx;
+                for (int j = 1; j < sidebar.getChildCount(); j++) {
+                    View c = sidebar.getChildAt(j);
+                    c.setBackground(j - 1 == idx ? rounded(0x26ffffff, 100) : null);
+                    if (c instanceof TextView) ((TextView) c).setTextColor(j - 1 == idx ? Color.WHITE : 0xff9aa0a6);
+                }
+                loaders[idx].run();
+            });
+            sidebar.addView(tab);
+        }
+        loaders[activeSettingsTab].run();
+
+        card.addView(sidebar, new LinearLayout.LayoutParams(dp(128), -2));
+        View vDiv = new View(this);
+        vDiv.setBackgroundColor(0x22ffffff);
+        card.addView(vDiv, new LinearLayout.LayoutParams(dp(1), -1));
+        card.addView(content, new LinearLayout.LayoutParams(0, -2, 1f));
+        showHudCard(host, card, 380);
+    }
+
+    private View hudToggleRow(String label, boolean on, Runnable toggle) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(8), 0, dp(8));
+        TextView lbl = text(label, 13, 0xffeef2f6);
+        row.addView(lbl, new LinearLayout.LayoutParams(0, -2, 1f));
+        FrameLayout sw = new FrameLayout(this);
+        sw.setBackground(rounded(on ? 0xff22c55e : 0x44ffffff, 100));
+        View thumb = new View(this);
+        thumb.setBackground(rounded(Color.WHITE, 100));
+        FrameLayout.LayoutParams tLp = new FrameLayout.LayoutParams(dp(16), dp(16),
+            Gravity.CENTER_VERTICAL | (on ? Gravity.END : Gravity.START));
+        tLp.setMargins(dp(3), 0, dp(3), 0);
+        sw.addView(thumb, tLp);
+        row.addView(sw, new LinearLayout.LayoutParams(dp(40), dp(22)));
+        row.setOnClickListener(v -> toggle.run());
+        return row;
+    }
+
+    private static final class HudIconView extends View {
+        private final String kind;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private boolean greenDot;
+
+        HudIconView(android.content.Context ctx, String kind, int color, float strokePx) {
+            super(ctx);
+            this.kind = kind;
+            paint.setColor(color);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(strokePx);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setStrokeJoin(Paint.Join.ROUND);
+            fillPaint.setStyle(Paint.Style.FILL);
+        }
+
+        void setGreenDot(boolean on) {
+            this.greenDot = on;
+            invalidate();
+        }
+
+        @Override protected void onDraw(Canvas c) {
+            float w = getWidth(), h = getHeight();
+            float s = Math.min(w, h);
+            float cx = w / 2f, cy = h / 2f;
+            float r = s * 0.32f;
+            if ("back".equals(kind)) {
+                c.drawLine(cx + r, cy, cx - r, cy, paint);
+                c.drawLine(cx - r, cy, cx - r * 0.25f, cy - r * 0.7f, paint);
+                c.drawLine(cx - r, cy, cx - r * 0.25f, cy + r * 0.7f, paint);
+            } else if ("gamepad".equals(kind)) {
+                android.graphics.RectF body = new android.graphics.RectF(cx - r * 1.15f, cy - r * 0.65f, cx + r * 1.15f, cy + r * 0.65f);
+                c.drawRoundRect(body, r * 0.55f, r * 0.55f, paint);
+                c.drawLine(cx - r * 0.65f, cy, cx - r * 0.25f, cy, paint);
+                c.drawLine(cx - r * 0.45f, cy - r * 0.2f, cx - r * 0.45f, cy + r * 0.2f, paint);
+                fillPaint.setColor(paint.getColor());
+                c.drawCircle(cx + r * 0.45f, cy - r * 0.16f, r * 0.1f, fillPaint);
+                c.drawCircle(cx + r * 0.65f, cy + r * 0.12f, r * 0.1f, fillPaint);
+            } else if ("screen".equals(kind)) {
+                android.graphics.RectF rect = new android.graphics.RectF(cx - r, cy - r * 0.75f, cx + r, cy + r * 0.55f);
+                c.drawRoundRect(rect, r * 0.22f, r * 0.22f, paint);
+                c.drawLine(cx - r * 0.45f, cy + r * 0.9f, cx + r * 0.45f, cy + r * 0.9f, paint);
+            } else if ("gear".equals(kind)) {
+                c.drawCircle(cx, cy, r * 0.36f, paint);
+                c.drawCircle(cx, cy, r * 0.78f, paint);
+                for (int i = 0; i < 8; i++) {
+                    double a = i * Math.PI / 4.0;
+                    c.drawLine(
+                        cx + (float) Math.cos(a) * r * 0.78f,
+                        cy + (float) Math.sin(a) * r * 0.78f,
+                        cx + (float) Math.cos(a) * r * 1.05f,
+                        cy + (float) Math.sin(a) * r * 1.05f, paint);
+                }
+            } else if ("cloud".equals(kind)) {
+                android.graphics.Path p = new android.graphics.Path();
+                p.moveTo(cx - r * 0.65f, cy + r * 0.45f);
+                p.lineTo(cx + r * 0.68f, cy + r * 0.45f);
+                p.cubicTo(cx + r * 1.15f, cy + r * 0.45f, cx + r * 1.1f, cy - r * 0.25f, cx + r * 0.55f, cy - r * 0.22f);
+                p.cubicTo(cx + r * 0.45f, cy - r * 0.78f, cx - r * 0.35f, cy - r * 0.78f, cx - r * 0.42f, cy - r * 0.18f);
+                p.cubicTo(cx - r * 1.05f, cy - r * 0.2f, cx - r * 1.1f, cy + r * 0.45f, cx - r * 0.65f, cy + r * 0.45f);
+                c.drawPath(p, paint);
+            } else if ("pointer".equals(kind)) {
+                android.graphics.Path p = new android.graphics.Path();
+                p.moveTo(cx - r * 0.45f, cy - r * 0.75f);
+                p.lineTo(cx - r * 0.45f, cy + r * 0.65f);
+                p.lineTo(cx - r * 0.08f, cy + r * 0.32f);
+                p.lineTo(cx + r * 0.28f, cy + r * 0.85f);
+                p.lineTo(cx + r * 0.48f, cy + r * 0.72f);
+                p.lineTo(cx + r * 0.14f, cy + r * 0.22f);
+                p.lineTo(cx + r * 0.62f, cy + r * 0.18f);
+                p.close();
+                c.drawPath(p, paint);
+            } else if ("keyboard".equals(kind)) {
+                android.graphics.RectF rect = new android.graphics.RectF(cx - r * 1.15f, cy - r * 0.72f, cx + r * 1.15f, cy + r * 0.72f);
+                c.drawRoundRect(rect, r * 0.24f, r * 0.24f, paint);
+                c.drawLine(cx - r * 0.65f, cy - r * 0.22f, cx - r * 0.35f, cy - r * 0.22f, paint);
+                c.drawLine(cx - r * 0.1f, cy - r * 0.22f, cx + r * 0.2f, cy - r * 0.22f, paint);
+                c.drawLine(cx + r * 0.45f, cy - r * 0.22f, cx + r * 0.75f, cy - r * 0.22f, paint);
+                c.drawLine(cx - r * 0.55f, cy + r * 0.28f, cx + r * 0.55f, cy + r * 0.28f, paint);
+            } else if ("crown".equals(kind)) {
+                android.graphics.Path p = new android.graphics.Path();
+                p.moveTo(cx - r * 0.9f, cy + r * 0.45f);
+                p.lineTo(cx - r * 0.95f, cy - r * 0.35f);
+                p.lineTo(cx - r * 0.4f, cy + r * 0.05f);
+                p.lineTo(cx, cy - r * 0.55f);
+                p.lineTo(cx + r * 0.4f, cy + r * 0.05f);
+                p.lineTo(cx + r * 0.95f, cy - r * 0.35f);
+                p.lineTo(cx + r * 0.9f, cy + r * 0.45f);
+                p.close();
+                c.drawPath(p, paint);
+            }
+            if (greenDot) {
+                fillPaint.setColor(0xff22c55e);
+                c.drawCircle(w - s * 0.22f, h - s * 0.22f, s * 0.11f, fillPaint);
+            }
+        }
+    }
+
+    private FrameLayout playerCircleVectorIcon(String kind, boolean greenDot, String description, Runnable action) {
+        FrameLayout wrap = new FrameLayout(this);
+        GradientDrawable bg = rounded(0x8814161a, 100);
+        bg.setStroke(dp(1), 0x33ffffff);
+        wrap.setBackground(bg);
+        HudIconView icon = new HudIconView(this, kind, 0xfff2f4f8, dp(1.6f));
+        icon.setGreenDot(greenDot);
+        wrap.addView(icon, new FrameLayout.LayoutParams(-1, -1));
+        wrap.setContentDescription(description);
+        wrap.setOnClickListener(v -> {
+            animateTap(wrap);
+            action.run();
+        });
+        return wrap;
+    }
+
+    private TextView playerCircleIcon(String symbol, String description, Runnable action) {
+        TextView icon = text(symbol, 16, 0xfff2f4f8);
+        icon.setGravity(Gravity.CENTER);
+        GradientDrawable bg = rounded(0x8814161a, 100);
+        bg.setStroke(dp(1), 0x33ffffff);
+        icon.setBackground(bg);
+        icon.setContentDescription(description);
+        icon.setOnClickListener(view -> action.run());
+        return icon;
     }
 
     private TextView playerShortcut(String label, String description, Runnable action) {
@@ -2408,7 +3314,8 @@ public final class MainActivity extends Activity {
     }
 
     private boolean touchControlsEnabled() {
-        return touchControlsOverride == null ? !gamepadConnected : touchControlsOverride;
+        if (gamepadConnected) return false;
+        return touchControlsOverride == null ? true : touchControlsOverride;
     }
 
     private String touchAction() {
@@ -2421,14 +3328,17 @@ public final class MainActivity extends Activity {
         controls.setVisibility(showTouch ? View.VISIBLE : View.GONE);
         if (!showTouch) resetTouchPad();
         updatePlayerShortcuts();
-        metrics.setVisibility(!launching && showMetrics ? View.VISIBLE : View.GONE);
+        metrics.setVisibility(View.GONE);
     }
 
     private void updatePlayerShortcuts() {
         if (playerMenuButton == null || player == null) return;
-        boolean visible = !launching && playerShortcutsVisible;
-        playerMenuButton.setVisibility(visible ? View.VISIBLE : View.GONE);
-        showTouchButton.setVisibility(visible && !touchControlsEnabled() ? View.VISIBLE : View.GONE);
+        boolean visible = !launching && !cleanScreenMode && (playerShortcutsVisible || activeHudCard != null);
+        int vis = visible ? View.VISIBLE : View.GONE;
+        playerMenuButton.setVisibility(vis);
+        if (hudPillWrap != null) hudPillWrap.setVisibility(vis);
+        if (hudRightBar != null) hudRightBar.setVisibility(vis);
+        if (showTouchButton != null) showTouchButton.setVisibility(vis);
     }
 
     private void setPlayerShortcuts(boolean visible) {
@@ -2463,6 +3373,7 @@ public final class MainActivity extends Activity {
         }
         gamepadConnected = controllerDevice != -1;
         updatePlayerOverlays();
+        syncHudIndicators();
     }
 
     private void resetTouchPad() {
@@ -2585,6 +3496,11 @@ public final class MainActivity extends Activity {
                                 metricValues[0].setText(Long.toString(decodedFps));
                                 metricValues[1].setText(bitrate);
                                 metricValues[2].setText(status[9] + " ms");
+                                if (hudPill != null) {
+                                    hudPill.setText(showMetrics
+                                        ? "Cloud Gaming  •  ● Jogando • " + decodedFps + " FPS • " + bitrate + " Mb/s • " + status[9] + " ms"
+                                        : "Cloud Gaming  •  ● Jogando");
+                                }
                                 metricDetails.setText(details);
                             });
                         }
@@ -2635,9 +3551,19 @@ public final class MainActivity extends Activity {
 
     private void leavePlayer(boolean showReport) {
         if (player == null) return;
+        closeActiveHudCard();
         PlaybackReport report = showReport ? playbackReport : null;
         ++operation;
+        if (playbackTicker != null) {
+            playbackTicker.cancel(false);
+            playbackTicker = null;
+        }
         player = null;
+        activeHudCard = null;
+        hudPillWrap = null;
+        hudRightBar = null;
+        cleanScreenMode = false;
+        hudPill = null;
         ui.removeCallbacks(hidePlayerShortcuts);
         if (playerMenu != null) playerMenu.dismiss();
         playerSurface = null;
@@ -2653,11 +3579,17 @@ public final class MainActivity extends Activity {
         getWindow().getDecorView().setSystemUiVisibility(0);
         setRequestedOrientation(returnOrientation);
         if (home) {
-            showHome(homeRows);
-            refreshHomeRows();
-        } else {
+            if (homeRows != null) {
+                showHome(homeRows);
+                refreshHomeRows();
+            } else {
+                openHome();
+            }
+        } else if (games != null) {
             showLibrary(games);
             if (section == RECENT_GAMES) loadSection(RECENT_GAMES);
+        } else {
+            openHome();
         }
         startCatalogDiscovery(false);
     }
@@ -2784,39 +3716,32 @@ public final class MainActivity extends Activity {
         placeTouch(panel, touchKey("LT", TOUCH_LT, shoulderHeight, shoulderHit),
             shoulderWidth, shoulderHit, topLeft, side, top);
         placeTouch(panel, touchKey("LB", 0x0100, shoulderHeight, shoulderHit),
-            shoulderWidth, shoulderHit, topLeft, side, top + shoulderHit + 6 * fit);
+            shoulderWidth, shoulderHit, topLeft, side + 44 * fit, top + shoulderHit + 8 * fit);
         placeTouch(panel, touchKey("RT", TOUCH_RT, shoulderHeight, shoulderHit),
             shoulderWidth, shoulderHit, topRight, side, top);
         placeTouch(panel, touchKey("RB", 0x0200, shoulderHeight, shoulderHit),
-            shoulderWidth, shoulderHit, topRight, side, top + shoulderHit + 6 * fit);
-        addTouchCap(panel, "G", 0x0400, 44 * buttons, fit, Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, top);
+            shoulderWidth, shoulderHit, topRight, side + 44 * fit, top + shoulderHit + 8 * fit);
 
-        float stick = 112 * scale;
-        float thumb = 54 * buttons;
-        float dpad = 54 * buttons * 0.88f * 3.1f;
-        float leftStick = side + dpad + 14 * fit;
-        placeTouch(panel, new TouchDpad(), dpad, dpad, bottomLeft, side, bottom);
-        placeTouch(panel, new TouchStick(true), stick, stick, bottomLeft, leftStick, bottom);
-        addTouchCap(panel, "LS", 0x0040, thumb, fit, bottomLeft,
-            leftStick + (stick - thumb) / 2, bottom + stick + 6 * fit);
+        float stick = 116 * scale;
+        float dpad = 54 * buttons * 0.88f * 2.8f;
+        float dpadLeft = side + stick + 14 * fit;
+        placeTouch(panel, new TouchStick(true), stick, stick, bottomLeft, side, bottom + 54 * fit);
+        placeTouch(panel, new TouchDpad(), dpad, dpad, bottomLeft, dpadLeft, bottom + 40 * fit);
 
         float face = 54 * buttons * 0.9f;
         float faceHit = Math.max(48 * fit, face);
         float distance = faceHit * 1.05f;
         float faceWidth = faceHit + 2 * distance;
         float rightStick = side + faceWidth + 14 * fit;
-        placeTouch(panel, new TouchStick(false), stick, stick, bottomRight, rightStick, bottom);
-        addTouchCap(panel, "RS", 0x0080, thumb, fit, bottomRight,
-            rightStick + (stick - thumb) / 2, bottom + stick + 6 * fit);
-        addTouchCap(panel, "A", 0x1000, face, fit, bottomRight, side + distance, bottom);
-        addTouchCap(panel, "B", 0x2000, face, fit, bottomRight, side, bottom + distance);
-        addTouchCap(panel, "X", 0x4000, face, fit, bottomRight, side + 2 * distance, bottom + distance);
-        addTouchCap(panel, "Y", 0x8000, face, fit, bottomRight, side + distance, bottom + 2 * distance);
+        placeTouch(panel, new TouchStick(false), stick, stick, bottomRight, rightStick, bottom + 28 * fit);
+        addTouchCap(panel, "A", 0x1000, face, fit, bottomRight, side + distance, bottom + 46 * fit);
+        addTouchCap(panel, "B", 0x2000, face, fit, bottomRight, side, bottom + 46 * fit + distance);
+        addTouchCap(panel, "X", 0x4000, face, fit, bottomRight, side + 2 * distance, bottom + 46 * fit + distance);
+        addTouchCap(panel, "Y", 0x8000, face, fit, bottomRight, side + distance, bottom + 46 * fit + 2 * distance);
 
-        float centerSize = 42 * buttons;
-        float centerOffset = centerSize / 2 + 27 * fit;
-        addTouchCap(panel, "◀", 0x0020, centerSize, fit, bottomCenter, -centerOffset, bottom);
-        addTouchCap(panel, "▶", 0x0010, centerSize, fit, bottomCenter, centerOffset, bottom);
+        float cornerSize = 40 * buttons;
+        addTouchCap(panel, "⧉", 0x0020, cornerSize, fit, bottomLeft, side, bottom - 12 * fit);
+        addTouchCap(panel, "⛶", 0x0010, cornerSize, fit, bottomRight, side, bottom - 12 * fit);
         return panel;
     }
 
@@ -3211,9 +4136,21 @@ public final class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        if (gameDetailOverlay != null) {
+            closeGameDetail();
+            return;
+        }
         if (player != null) {
+            if (cleanScreenMode) {
+                toggleCleanScreen(player);
+                return;
+            }
+            if (activeHudCard != null) {
+                closeActiveHudCard();
+                return;
+            }
             if (launching) leavePlayer(false);
-            else showPlayerMenu();
+            else toggleSettingsCard(player);
         } else if (authenticating) cancelSignIn();
         else if (libraryVisible && settingsScreen) openHome();
         else if (libraryVisible && inlineSearch) {
