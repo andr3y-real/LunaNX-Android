@@ -121,6 +121,9 @@ class LunaStreamSession
         uint64_t codec_stale_drops = 0;
         uint64_t keyframe_requests = 0;
         uint64_t peak_queue_ms = 0;
+        uint64_t codec_watchdog_resets = 0;
+        uint64_t slow_codec_outputs = 0;
+        uint64_t peak_playout_reserve_ms = 0;
     };
     AndroidVideoStats android_video_stats();
     bool set_android_surface(ANativeWindow* window);
@@ -171,7 +174,8 @@ class LunaStreamSession
     bool send_on_channel(int sid, const std::vector<uint8_t>& message);
     void send_client_startup_messages();
     void maybe_send_ping();
-    void enqueue_decode_unit(const uint8_t* data, size_t size, uint32_t rtp_timestamp);
+    void enqueue_decode_unit(const uint8_t* data, size_t size, uint32_t rtp_timestamp, bool idr);
+    void discard_decode_prefix_locked(size_t count);
     void recycle_decode_buffer_locked(std::vector<uint8_t>&& buffer);
     void clear_decoder_queue_locked();
 #ifdef __ANDROID__
@@ -232,6 +236,7 @@ class LunaStreamSession
     int64_t arrival_jitter_us_ = 0;
     std::atomic<uint64_t> decoder_resets_ {0};
     std::atomic<uint64_t> codec_resets_ {0};
+    std::atomic<uint64_t> codec_watchdog_resets_ {0};
     std::atomic<uint64_t> queue_recoveries_ {0};
     uint64_t peak_decoder_queue_age_ms_ = 0; // Guarded by decoder_queue_mutex_.
     uint64_t waiting_for_keyframe_drops_ = 0; // Guarded by decoder_queue_mutex_.

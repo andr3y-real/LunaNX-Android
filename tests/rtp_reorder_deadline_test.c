@@ -105,7 +105,7 @@ static void test_nack_deadlines(void) {
   assert(!rtp_decoder_get_nacks(&decoder, 0, 92, entries));
   assert(rtp_decoder_get_nacks(&decoder, 1, 92, entries) == 1);
   assert(entries[0].packet_id == 65535 && entries[0].bitmask == 7);
-  assert(rtp_decoder_note_nack(&decoder, 1, entries[0].packet_id, entries[0].bitmask) == 0);
+  assert(rtp_decoder_note_nack(&decoder, 1, 92, entries[0].packet_id, entries[0].bitmask) == 0);
   assert(!retransmit(&decoder, 4, 2)); // Unrequested RTX cannot extend the window.
   receive(&decoder, 65535, 3);
   assert(!rtp_decoder_get_nacks(&decoder, 8, 92, entries));
@@ -136,10 +136,10 @@ static void test_nack_deadlines(void) {
   assert(entries[1].packet_id == 25 && entries[1].bitmask == 65535);
   assert(entries[2].packet_id == 42 && entries[2].bitmask == 3);
   for (size_t i = 0; i < count; ++i)
-    assert(rtp_decoder_note_nack(&decoder, 255, entries[i].packet_id, entries[i].bitmask) == 0);
+    assert(rtp_decoder_note_nack(&decoder, 255, 24, entries[i].packet_id, entries[i].bitmask) == 0);
   assert(rtp_decoder_get_nacks(&decoder, 260, 24, entries) == 0);
   assert(rtp_decoder_get_nacks(&decoder, 279, 24, entries) == 3);
-  assert(rtp_decoder_note_nack(&decoder, 279, entries[0].packet_id, entries[0].bitmask) == 17);
+  assert(rtp_decoder_note_nack(&decoder, 279, 24, entries[0].packet_id, entries[0].bitmask) == 17);
 
   rtp_decoder_expire_gap(&decoder, 361);
   assert(output.count == 9);
@@ -154,7 +154,7 @@ static void test_nack_deadlines(void) {
   assert(entries[0].packet_id == 46 && entries[11].packet_id == 233 &&
          entries[11].bitmask == 65535);
   for (size_t i = 0; i < count; ++i)
-    assert(rtp_decoder_note_nack(&decoder, 405, entries[i].packet_id, entries[i].bitmask) == 0);
+    assert(rtp_decoder_note_nack(&decoder, 405, 132, entries[i].packet_id, entries[i].bitmask) == 0);
   assert(rtp_decoder_get_nacks(&decoder, 410, 132, entries) == 0);
   rtp_decoder_expire_gap(&decoder, 550);
   assert(output.count == 9);
@@ -162,6 +162,42 @@ static void test_nack_deadlines(void) {
   assert(!retransmit(&decoder, 250, 551));
   rtp_decoder_expire_gap(&decoder, 565);
   assert(output.count == 10 && output.sequences[9] == 249);
+  free(decoder.reorder_buf);
+}
+
+static void test_gap_retains_rtx_deadline(void) {
+  struct Output output = {0};
+  RtpDecoder decoder = {0};
+  decoder.type = PT_H264;
+  decoder.user_data = &output;
+  decoder.decode_func = record_sequence;
+  decoder.reorder_buf = calloc(RTP_REORDER_WINDOW, RTP_REORDER_PACKET_CAPACITY);
+  assert(decoder.reorder_buf);
+
+  rtp_decoder_set_reorder_grace_ms(&decoder, 140);
+  rtp_decoder_set_reorder_burst_grace_ms(&decoder, 165);
+  receive(&decoder, 100, 1000);
+  receive(&decoder, 171, 1001);
+  RtcpNack entries[RTCP_MAX_NACK_ENTRIES];
+  assert(rtp_decoder_get_nacks(&decoder, 1006, 132, entries) == 5);
+  for (size_t i = 0; i < 5; ++i)
+    assert(rtp_decoder_note_nack(&decoder, 1006, 132, entries[i].packet_id, entries[i].bitmask) == 0);
+  // The new RTT is lower, but packets requested at the old RTT are still in flight.
+  assert(rtp_decoder_get_nacks(&decoder, 1075, 40, entries) == 0);
+  rtp_decoder_set_reorder_grace_ms(&decoder, 95);
+  rtp_decoder_set_reorder_burst_grace_ms(&decoder, 112);
+  rtp_decoder_expire_gap(&decoder, 1138);
+  assert(output.count == 1);
+  assert(retransmit(&decoder, 101, 1139));
+  assert(output.count == 2 && output.sequences[1] == 101);
+  rtp_decoder_expire_gap(&decoder, 1166);
+  assert(output.count == 3 && output.sequences[2] == 171);
+
+  receive(&decoder, 173, 1200);
+  rtp_decoder_expire_gap(&decoder, 1294);
+  assert(output.count == 3);
+  rtp_decoder_expire_gap(&decoder, 1295);
+  assert(output.count == 4 && output.sequences[3] == 173);
   free(decoder.reorder_buf);
 }
 
@@ -182,4 +218,5 @@ int main(void) {
   test_expiration_and_reorder();
   test_nack_deadlines();
   test_nack_wire_format();
+  test_gap_retains_rtx_deadline();
 }

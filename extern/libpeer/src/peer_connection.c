@@ -1131,14 +1131,14 @@ static void peer_connection_maybe_send_video_nack(PeerConnection* pc) {
   pc->video_last_nack_check_ms = now_ms;
 
   RtcpNack entries[RTCP_MAX_NACK_ENTRIES];
-  const size_t count = rtp_decoder_get_nacks(&pc->vrtp_decoder, now_ms,
-                                             pc->agent.rtt_current_ms, entries);
+  const uint32_t rtt_ms = pc->agent.rtt_current_ms;
+  const size_t count = rtp_decoder_get_nacks(&pc->vrtp_decoder, now_ms, rtt_ms, entries);
   if (count == 0 || peer_connection_send_rtcp_nack(pc, pc->remote_vssrc, entries, count) < 0)
     return;
 
   pc->video_nack_requests++;
   for (size_t i = 0; i < count; ++i) {
-    pc->video_nack_retries += rtp_decoder_note_nack(&pc->vrtp_decoder, now_ms,
+    pc->video_nack_retries += rtp_decoder_note_nack(&pc->vrtp_decoder, now_ms, rtt_ms,
                                                    entries[i].packet_id, entries[i].bitmask);
     pc->video_nack_packets_requested += peer_connection_nack_packet_count(entries[i].bitmask);
   }

@@ -50,7 +50,7 @@ bool is_config_only_access_unit(const uint8_t* data, int size)
 AndroidVideoDecoder::AndroidVideoDecoder(ANativeWindow* window, int width, int height, int fps,
                                          std::function<void()> wake)
     : width_(width), height_(height), fps_(fps), wake_(std::move(wake)), presentation_clock_(fps),
-      codec_queue_(fps), decoded_width_(width), decoded_height_(height)
+      codec_queue_(fps)
 {
     set_output_window(window, 0);
 }
@@ -245,12 +245,27 @@ AndroidVideoDecoder::OutputProgress AndroidVideoDecoder::drain_output(uint64_t g
     // pictures. Keep only the two newest pictures eligible for the Surface.
     const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
         Clock::now().time_since_epoch()).count();
+    const size_t first = pictures > 2 ? pictures - 2 : 0;
+    const auto timing = [&frames](size_t index) {
+        return VideoPresentationClock::Picture {
+            frames[index].info.presentationTimeUs * 1000LL,
+            static_cast<int64_t>(frames[index].available_us * 1000u)
+        };
+    };
+    std::array<std::optional<int64_t>, 2> render_times {};
+    if (pictures - first == 2)
+        render_times = presentation_clock_.schedule_pair(timing(first), timing(first + 1), now_ns);
+    else if (pictures == 1)
+        render_times[0] = presentation_clock_.schedule(timing(0), now_ns);
+    const auto reserve_us = static_cast<uint64_t>(presentation_clock_.reserve_ns() / 1000);
+    if (reserve_us > peak_playout_reserve_us_.load(std::memory_order_relaxed))
+        peak_playout_reserve_us_.store(reserve_us, std::memory_order_relaxed);
+
     for (size_t i = 0; i < pictures; ++i)
     {
         const auto& output = frames[i];
-        const bool stale = pictures - i > 2;
-        const auto when_ns = stale ? std::nullopt : presentation_clock_.schedule(
-            output.info.presentationTimeUs * 1000LL, now_ns);
+        const bool stale = i < first;
+        const auto when_ns = stale ? std::nullopt : render_times[i - first];
         const auto released = when_ns
             ? AMediaCodec_releaseOutputBufferAtTime(codec_, output.index, *when_ns)
             : AMediaCodec_releaseOutputBuffer(codec_, output.index, false);
@@ -365,4 +380,6 @@ void AndroidVideoDecoder::close_locked()
     presentation_ticks_ = 0;
     presentation_clock_.reset();
     codec_queue_.reset();
+    decoded_width_.store(0, std::memory_order_relaxed);
+    decoded_height_.store(0, std::memory_order_relaxed);
 }

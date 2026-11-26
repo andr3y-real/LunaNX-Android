@@ -49,7 +49,7 @@ public final class PlaybackReportTest {
         if (wrapped.split(" · reset\\+", -1).length != 21) throw new AssertionError("Unexpected event count");
 
         PlaybackReport live = new PlaybackReport(100, "60 FPS");
-        String[] extended = java.util.Arrays.copyOf(status, 41);
+        String[] extended = java.util.Arrays.copyOf(status, 44);
         extended[6] = "0";
         extended[7] = "0";
         extended[15] = "0";
@@ -63,11 +63,17 @@ public final class PlaybackReportTest {
         extended[3] = "96";
         extended[23] = "123";
         extended[38] = "3";
+        extended[41] = "2";
+        extended[42] = "6";
+        extended[43] = "17";
         live.sample(2100, 3, 900_000, 110, 100, extended);
         String incident = live.format(2100);
         require(incident, "FPS 50/40");
         require(incident, "backlog (stale) / cadência: 3 / 1");
         require(incident, "117 ms / 90 ms");
+        require(incident, "Reinícios por falta de saída do codec: 2");
+        require(incident, "Quadros com 250 ms ou mais no codec: 6");
+        require(incident, "Pico da reserva adaptativa de apresentação: 17 ms");
     }
 
     private static void require(String value, String expected) {

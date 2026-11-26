@@ -129,8 +129,6 @@ LunaStreamSession::LunaStreamSession(std::shared_ptr<const luna::LunaClient> cli
             decoder_queue_cv_.notify_one();
         });
     video_backend_name_ = "Android MediaCodec (assíncrono)";
-    rendered_width_.store(settings_.width);
-    rendered_height_.store(settings_.height);
 #else
     setup_video_decoder();
 #endif
@@ -776,7 +774,7 @@ void LunaStreamSession::decoder_loop()
             resets_without_output = 0;
         }
 
-        const auto output = !reset_requested && !signals.error && signals.output
+        const auto output = !signals.error && signals.output
             ? decoder_->drain_output(generation) : AndroidVideoDecoder::OutputProgress {};
         if (generation != video_surface_generation_.load())
             continue;
@@ -793,6 +791,8 @@ void LunaStreamSession::decoder_loop()
             if (frames_decoded_.fetch_add(output.decoded) == 0)
                 AppendStreamLog("DECODE first_frame");
             resets_without_output = 0;
+            // Output may arrive between the watchdog decision and this wakeup.
+            reset_requested = false;
         }
 
         bool submit_error = false;
@@ -851,14 +851,21 @@ void LunaStreamSession::decoder_loop()
                 std::lock_guard lock(decoder_queue_mutex_);
                 if (generation != video_surface_generation_.load())
                     continue;
-                decoder_queue_drops_ += static_cast<int>(decoder_queue_.size());
-                clear_decoder_queue_locked();
-                decoder_resync_required_.store(true);
+                const auto skip = video::PicturesBeforeNewestKeyframe(decoder_queue_);
+                decoder_queue_drops_ += static_cast<int>(skip);
+                discard_decode_prefix_locked(skip);
+                decoder_resync_required_.store(decoder_queue_.empty());
+                if (!decoder_queue_.empty())
+                    keyframe_needed_.store(false);
             }
             if (codec_error)
             {
                 ++decode_errors_;
                 ++codec_resets_;
+            }
+            else
+            {
+                ++codec_watchdog_resets_;
             }
             ++decoder_resets_;
             const bool recovered = ++resets_without_output <= 4 && decoder_->reset_stream(generation);
@@ -870,7 +877,9 @@ void LunaStreamSession::decoder_loop()
                 fail("Não foi possível recuperar o decodificador de vídeo.");
                 break;
             }
-            keyframe_needed_.store(true);
+            std::lock_guard lock(decoder_queue_mutex_);
+            if (decoder_resync_required_.load())
+                keyframe_needed_.store(true);
         }
     }
 #else
@@ -942,30 +951,35 @@ uint64_t LunaStreamSession::observe_decoder_queue_age_locked()
 }
 #endif
 
-void LunaStreamSession::clear_decoder_queue_locked()
+void LunaStreamSession::discard_decode_prefix_locked(size_t count)
 {
 #ifdef __ANDROID__
     observe_decoder_queue_age_locked();
 #endif
-    while (!decoder_queue_.empty())
+    for (size_t i = 0; i < count; ++i)
     {
         recycle_decode_buffer_locked(std::move(decoder_queue_.front().data));
         decoder_queue_.pop_front();
     }
 }
 
-void LunaStreamSession::enqueue_decode_unit(const uint8_t* data, size_t size, uint32_t rtp_timestamp)
+void LunaStreamSession::clear_decoder_queue_locked()
+{
+    discard_decode_prefix_locked(decoder_queue_.size());
+}
+
+void LunaStreamSession::enqueue_decode_unit(const uint8_t* data, size_t size, uint32_t rtp_timestamp, bool idr)
 {
     if (!data || size == 0 || !decoder_running_.load(std::memory_order_acquire))
         return;
 
-    const bool idr = ContainsH264Idr(data, size);
     std::lock_guard<std::mutex> lock(decoder_queue_mutex_);
 #ifdef __ANDROID__
     if (!video_surface_attached_.load())
         return;
 #endif
-    if (decoder_resync_required_.load() && !idr)
+    const bool waiting_for_idr = decoder_resync_required_.load();
+    if (waiting_for_idr && !idr)
     {
 #ifdef __ANDROID__
         ++waiting_for_keyframe_drops_;
@@ -976,6 +990,11 @@ void LunaStreamSession::enqueue_decode_unit(const uint8_t* data, size_t size, ui
     }
 
 #ifdef __ANDROID__
+    if (waiting_for_idr)
+    {
+        decoder_queue_drops_ += static_cast<int>(decoder_queue_.size());
+        clear_decoder_queue_locked();
+    }
     // A recovered RTP burst can deliver several valid reference pictures at
     // once. Keep up to ~200 ms of encoded pictures, and drop stale decoded output.
     const auto queue_capacity = static_cast<size_t>((std::max(1, settings_.fps) + 4) / 5);
@@ -983,34 +1002,19 @@ void LunaStreamSession::enqueue_decode_unit(const uint8_t* data, size_t size, ui
     {
         ++queue_recoveries_;
         observe_decoder_queue_age_locked();
-        // A new IDR can replace the entire queue. A queued IDR can only help if
-        // removing its predecessors actually makes room for the new picture.
-        size_t skip = decoder_queue_.size();
-        if (!idr)
+        const auto skip = idr ? decoder_queue_.size() : video::PicturesBeforeNewestKeyframe(decoder_queue_);
+        if (!idr && (skip == 0 || skip == decoder_queue_.size()))
         {
-            for (size_t i = decoder_queue_.size() - 1; i > 0; --i)
-            {
-                if (decoder_queue_[i].idr)
-                {
-                    skip = i;
-                    break;
-                }
-            }
-        }
-        decoder_queue_drops_ += static_cast<int>(skip);
-        for (size_t i = 0; i < skip; ++i)
-        {
-            recycle_decode_buffer_locked(std::move(decoder_queue_.front().data));
-            decoder_queue_.pop_front();
-        }
-        if (!idr && decoder_queue_.empty())
-        {
+            // Continue decoding the intact prefix while the next IDR is in
+            // flight. Subsequent pictures depend on the one we just rejected.
             ++decoder_queue_drops_;
             ++waiting_for_keyframe_drops_;
             decoder_resync_required_.store(true);
             keyframe_needed_.store(true);
             return;
         }
+        decoder_queue_drops_ += static_cast<int>(skip);
+        discard_decode_prefix_locked(skip);
     }
 #else
     const auto queue_capacity = video::MaximumQueuedAccessUnits(settings_.fps);
@@ -1062,8 +1066,12 @@ void LunaStreamSession::request_keyframe(const char* reason)
     if (last_keyframe_request_at_.time_since_epoch().count() != 0 &&
         now - last_keyframe_request_at_ < minimum_interval)
     {
+#ifdef __ANDROID__
+        keyframe_needed_.store(true);
+#else
         if (decoder_resync_required_.load())
             keyframe_needed_.store(true);
+#endif
         return;
     }
     last_keyframe_request_at_ = now;
@@ -1075,7 +1083,11 @@ void LunaStreamSession::request_keyframe(const char* reason)
         first_pending_pli_at_us_ = NowUs();
 #endif
     AppendStreamLog(std::string("KEYFRAME reason=") + reason + " pli=" + std::to_string(result));
-    if (decoder_resync_required_.load())
+    if (decoder_resync_required_.load()
+#ifdef __ANDROID__
+        || !last_keyframe_request_sent_
+#endif
+    )
         keyframe_needed_.store(true);
 }
 
@@ -1086,10 +1098,16 @@ void LunaStreamSession::maybe_recover_decode_stall()
     const uint64_t last_decoded = last_decoded_frame_at_us_.load(std::memory_order_acquire);
     const uint64_t now_us = NowUs();
 #ifdef __ANDROID__
+    if (!decoder_ || !video_surface_attached_.load())
+        return;
+
+    const auto pending = decoder_->codec_pending();
+    const bool codec_stalled = video::AndroidCodecOutputStalled(
+        now_us, last_decoded, decoder_->oldest_pending_us(), last_video_arrival_us_, pending);
     const uint64_t last_progress = std::max(last_decoded, video_run_start_us_);
-    const bool stalled = last_progress != 0 && now_us - last_progress >= 800'000;
-    if (!stalled || !video_surface_attached_.load() ||
-        last_video_arrival_us_ <= last_progress || now_us - last_video_arrival_us_ > 250'000)
+    const bool picture_stalled = last_progress != 0 && now_us - last_progress >= 800'000 &&
+        last_video_arrival_us_ > last_progress && now_us - last_video_arrival_us_ <= 250'000;
+    if (!codec_stalled && !picture_stalled)
         return;
 #else
     const bool stalled = last_decoded != 0 && now_us >= last_decoded &&
@@ -1101,18 +1119,33 @@ void LunaStreamSession::maybe_recover_decode_stall()
     if (last_decode_stall_request_at_.time_since_epoch().count() != 0 &&
         now - last_decode_stall_request_at_ < std::chrono::milliseconds(1200))
         return;
+#ifdef __ANDROID__
+    {
+        std::lock_guard lock(decoder_queue_mutex_);
+        const auto signals = decoder_->signals();
+        if (last_decoded_frame_at_us_.load(std::memory_order_acquire) != last_decoded ||
+            signals.output || signals.error)
+            return;
+
+        if (decoder_->codec_pending() > 0)
+        {
+            last_decode_stall_request_at_ = now;
+            // The decoder worker keeps any queued IDR and can resume from it.
+            decoder_reset_requested_.store(true);
+            decoder_queue_cv_.notify_one();
+            return;
+        }
+        if (video::PicturesBeforeNewestKeyframe(decoder_queue_) < decoder_queue_.size())
+            return;
+        last_decode_stall_request_at_ = now;
+        decoder_resync_required_.store(true);
+    }
+#else
     last_decode_stall_request_at_ = now;
     {
         std::lock_guard<std::mutex> lock(decoder_queue_mutex_);
         clear_decoder_queue_locked();
-#ifdef __ANDROID__
-        decoder_resync_required_.store(true);
-        if (decoder_ && decoder_->codec_pending() > 0)
-            decoder_reset_requested_.store(true);
-        decoder_queue_cv_.notify_one();
-#endif
     }
-#ifndef __ANDROID__
     decoder_resync_required_.store(true);
     if (!decoder_ || !decoder_->uses_hardware_frames())
         decoder_reset_requested_.store(true);
@@ -1171,7 +1204,8 @@ void LunaStreamSession::on_video_packet(const PeerVideoPacket& packet)
     last_video_arrival_us_ = arrival_us;
     last_video_rtp_timestamp_ = packet.timestamp;
 #endif
-    maybe_recover_rtp_damage(ContainsH264Idr(packet.data, packet.size));
+    const bool idr = ContainsH264Idr(packet.data, packet.size);
+    maybe_recover_rtp_damage(idr);
 
     video_ssrc_ = packet.ssrc;
     for (const auto& report : sender_reports_)
@@ -1186,8 +1220,8 @@ void LunaStreamSession::on_video_packet(const PeerVideoPacket& packet)
     }
     if (packets_received_.fetch_add(1) == 0)
         AppendStreamLog("VIDEO first_access_unit size=" + std::to_string(packet.size) +
-                        " idr=" + std::to_string(ContainsH264Idr(packet.data, packet.size) ? 1 : 0));
-    enqueue_decode_unit(packet.data, packet.size, packet.timestamp);
+                        " idr=" + std::to_string(idr ? 1 : 0));
+    enqueue_decode_unit(packet.data, packet.size, packet.timestamp, idr);
 }
 
 void LunaStreamSession::on_audio_packet(const PeerAudioPacket& packet)
@@ -1332,7 +1366,10 @@ LunaStreamSession::AndroidVideoStats LunaStreamSession::android_video_stats()
             rtp.rtx_packets_received, rtp.rtx_packets_recovered,
             decoder_ ? decoder_->submit_retries() : 0,
             decoder_ ? decoder_->stale_frames_dropped() : 0,
-            static_cast<uint64_t>(keyframe_request_attempts_), peak_decoder_queue_age_ms_};
+            static_cast<uint64_t>(keyframe_request_attempts_), peak_decoder_queue_age_ms_,
+            codec_watchdog_resets_.load(),
+            decoder_ ? decoder_->slow_codec_outputs() : 0,
+            decoder_ ? decoder_->peak_playout_reserve_us() / 1000 : 0};
 }
 #endif
 

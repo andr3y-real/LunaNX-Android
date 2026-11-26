@@ -33,6 +33,9 @@ final class PlaybackReport {
     private long maximumJitterMs;
     private long maximumCodecDelayMs;
     private long codecPendingLast;
+    private long codecWatchdogResets = -1;
+    private long slowCodecOutputs = -1;
+    private long peakPlayoutReserveMs = -1;
     private int lastPhase;
     private int renderedWidth;
     private int renderedHeight;
@@ -93,6 +96,9 @@ final class PlaybackReport {
         long newQueueFull = parseLongSafe(status, 11, queueFull);
         codecPendingLast = parseLongSafe(status, 12, codecPendingLast);
         long codecDelayMs = parseLongSafe(status, 13, 0);
+        codecWatchdogResets = parseLongSafe(status, 41, codecWatchdogResets);
+        slowCodecOutputs = parseLongSafe(status, 42, slowCodecOutputs);
+        peakPlayoutReserveMs = parseLongSafe(status, 43, peakPlayoutReserveMs);
         long newWaitingDrops = parseLongSafe(status, 15, waitingForKeyframeDrops);
 
         if (status.length >= 23) {
@@ -268,7 +274,7 @@ final class PlaybackReport {
                 .append(rttCurrentMs).append(" / ").append(rttMinMs).append(" / ")
                 .append(rttP95Ms).append(" / ").append(rttJitterMs).append(" ms\n");
         }
-        out.append("Pico jitter de chegada RTP: ").append(maximumJitterMs).append(" ms\n");
+        out.append("Pico jitter na chegada dos quadros: ").append(maximumJitterMs).append(" ms\n");
         out.append("Pacotes RTP de vídeo processados: ").append(rtpPacketsReceived)
             .append(" · gaps: ").append(rtpSequenceGaps)
             .append(" · reordenados: ").append(rtpReorderedPackets)
@@ -291,6 +297,13 @@ final class PlaybackReport {
             .append(" (").append(codecErrors).append(") / ").append(queueFull).append('\n');
         out.append("Picos de espera na fila / tempo até a saída do codec: ").append(maximumQueueMs)
             .append(" ms / ").append(maximumCodecDelayMs).append(" ms\n");
+
+        if (codecWatchdogResets >= 0)
+            out.append("Reinícios por falta de saída do codec: ").append(codecWatchdogResets).append('\n');
+        if (slowCodecOutputs >= 0)
+            out.append("Quadros com 250 ms ou mais no codec: ").append(slowCodecOutputs).append('\n');
+        if (peakPlayoutReserveMs >= 0)
+            out.append("Pico da reserva adaptativa de apresentação: ").append(peakPlayoutReserveMs).append(" ms\n");
 
         if (eventCount > 0) {
             out.append("\n[Ocorrências · FPS recebido/decodificado · até ").append(EVENT_LIMIT).append("]\n");

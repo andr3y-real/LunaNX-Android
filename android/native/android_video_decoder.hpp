@@ -36,6 +36,9 @@ public:
     bool ready() const { return started_; }
     Signals signals();
     size_t codec_pending() const { return codec_queue_.count(); }
+    uint64_t oldest_pending_us() const { return codec_queue_.oldest_pending_us(); }
+    uint64_t slow_codec_outputs() const { return codec_queue_.slow_outputs(); }
+    uint64_t peak_playout_reserve_us() const { return peak_playout_reserve_us_.load(std::memory_order_relaxed); }
     uint64_t peak_codec_delay_us() const { return codec_queue_.peak_delay_us(); }
     uint64_t submit_retries() const { return submit_retries_.load(std::memory_order_relaxed); }
     uint64_t stale_frames_dropped() const { return stale_frames_dropped_.load(std::memory_order_relaxed); }
@@ -88,8 +91,9 @@ private:
     uint32_t last_timestamp_ = 0;
     int64_t presentation_ticks_ = 0;
     bool have_timestamp_ = false;
-    std::atomic<int> decoded_width_;
-    std::atomic<int> decoded_height_;
+    std::atomic<int> decoded_width_ {0};
+    std::atomic<int> decoded_height_ {0};
+    std::atomic<uint64_t> peak_playout_reserve_us_ {0};
     std::atomic<uint64_t> submit_retries_ {0};
     std::atomic<uint64_t> stale_frames_dropped_ {0};
 

@@ -29,6 +29,8 @@ public:
         if (frame == pending_.end())
             return;
         const auto delay = now >= frame->since ? now - frame->since : 0;
+        if (delay >= 250'000)
+            slow_outputs_.fetch_add(1, std::memory_order_relaxed);
         if (delay > peak_delay_.load(std::memory_order_relaxed))
             peak_delay_.store(delay, std::memory_order_relaxed);
         pending_.erase(frame);
@@ -43,11 +45,14 @@ public:
 
     size_t count() const { return count_.load(std::memory_order_relaxed); }
 
+    uint64_t oldest_pending_us() const { return oldest_pending_.load(std::memory_order_relaxed); }
+    uint64_t slow_outputs() const { return slow_outputs_.load(std::memory_order_relaxed); }
     uint64_t peak_delay_us() const { return peak_delay_.load(std::memory_order_relaxed); }
 
 private:
     void publish()
     {
+        oldest_pending_.store(pending_.empty() ? 0 : pending_.front().since, std::memory_order_relaxed);
         count_.store(pending_.size(), std::memory_order_relaxed);
     }
 
@@ -60,5 +65,7 @@ private:
     const size_t frame_limit_;
     std::deque<Entry> pending_;
     std::atomic<size_t> count_ {0};
+    std::atomic<uint64_t> oldest_pending_ {0};
+    std::atomic<uint64_t> slow_outputs_ {0};
     std::atomic<uint64_t> peak_delay_ {0};
 };

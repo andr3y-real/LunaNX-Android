@@ -772,8 +772,10 @@ static void rtp_decoder_refresh_gap_clock(RtpDecoder* rtp_decoder,
   }
   rtp_decoder->reorder_gap_started_ms = now_ms - oldest_age_ms;
   rtp_decoder->reorder_gap_wait_counted = 0;
-  if (rtp_decoder->reorder_buffered_packets == 0)
+  if (rtp_decoder->reorder_buffered_packets == 0) {
     rtp_decoder->reorder_gap_is_burst = 0;
+    rtp_decoder->reorder_active_hold_ms = 0;
+  }
 }
 
 static uint16_t rtp_decoder_nearest_recovery_sequence(
@@ -845,6 +847,7 @@ static int rtp_decoder_decode_reordered(RtpDecoder* rtp_decoder, const uint8_t* 
     rtp_decoder->reorder_gap_started_ms = 0;
     rtp_decoder->reorder_gap_wait_counted = 0;
     rtp_decoder->reorder_gap_is_burst = 0;
+    rtp_decoder->reorder_active_hold_ms = 0;
     distance = 0;
   }
 
@@ -860,9 +863,9 @@ static int rtp_decoder_decode_reordered(RtpDecoder* rtp_decoder, const uint8_t* 
             ? 0
             : now_ms - rtp_decoder->reorder_gap_started_ms;
     const uint32_t effective_hold_ms =
-        (uint16_t)distance >= RTP_RECOVERY_BURST_GAP_DISTANCE
-            ? rtp_decoder->reorder_burst_gap_hold_ms
-            : rtp_decoder->reorder_gap_hold_ms;
+        rtp_decoder->reorder_active_hold_ms > rtp_decoder->reorder_burst_gap_hold_ms
+            ? rtp_decoder->reorder_active_hold_ms
+            : rtp_decoder->reorder_burst_gap_hold_ms;
     const uint16_t recovery_distance = (uint16_t)distance;
     if (rtp_recovery_should_wait_for_gap(
             recovery_distance, gap_age_ms, effective_hold_ms,
@@ -921,10 +924,15 @@ static int rtp_decoder_decode_reordered(RtpDecoder* rtp_decoder, const uint8_t* 
   rtp_decoder->reorder_sequences[slot] = sequence;
   rtp_decoder->reorder_used[slot] = 1;
   rtp_decoder->reorder_arrival_ms[slot] = now_ms;
-  if (rtp_decoder->reorder_buffered_packets++ == 0)
+  if (rtp_decoder->reorder_buffered_packets++ == 0) {
     rtp_decoder->reorder_gap_started_ms = now_ms;
-  if ((uint16_t)distance >= RTP_RECOVERY_BURST_GAP_DISTANCE)
+    rtp_decoder->reorder_active_hold_ms = rtp_decoder->reorder_gap_hold_ms;
+  }
+  if ((uint16_t)distance >= RTP_RECOVERY_BURST_GAP_DISTANCE) {
     rtp_decoder->reorder_gap_is_burst = 1;
+    if (rtp_decoder->reorder_burst_gap_hold_ms > rtp_decoder->reorder_active_hold_ms)
+      rtp_decoder->reorder_active_hold_ms = rtp_decoder->reorder_burst_gap_hold_ms;
+  }
   rtp_decoder->reordered_packets++;
   return retransmission ? 1 : 0;
 }
@@ -934,8 +942,7 @@ void rtp_decoder_expire_gap(RtpDecoder* rtp_decoder, uint32_t now_ms) {
     return;
 
   const uint32_t age_ms = now_ms - rtp_decoder->reorder_gap_started_ms;
-  const uint32_t hold_ms = rtp_decoder->reorder_gap_is_burst
-      ? rtp_decoder->reorder_burst_gap_hold_ms : rtp_decoder->reorder_gap_hold_ms;
+  const uint32_t hold_ms = rtp_decoder->reorder_active_hold_ms;
   if (age_ms < hold_ms)
     return;
 
@@ -967,6 +974,11 @@ void rtp_decoder_set_reorder_grace_ms(RtpDecoder* rtp_decoder,
   rtp_decoder->reorder_gap_hold_ms =
       rtp_recovery_clamp_u32(hold_ms, RTP_RECOVERY_MIN_GAP_HOLD_MS,
                              RTP_RECOVERY_MAX_GAP_HOLD_MS);
+  // RTT samples can fall while RTX is still in flight. Preserve the deadline
+  // committed to the active gap, and use lower latency for the next gap.
+  if (rtp_decoder->reorder_buffered_packets != 0 && !rtp_decoder->reorder_gap_is_burst &&
+      rtp_decoder->reorder_gap_hold_ms > rtp_decoder->reorder_active_hold_ms)
+    rtp_decoder->reorder_active_hold_ms = rtp_decoder->reorder_gap_hold_ms;
 }
 
 void rtp_decoder_set_reorder_burst_grace_ms(RtpDecoder* rtp_decoder,
@@ -976,6 +988,9 @@ void rtp_decoder_set_reorder_burst_grace_ms(RtpDecoder* rtp_decoder,
   rtp_decoder->reorder_burst_gap_hold_ms =
       rtp_recovery_clamp_u32(hold_ms, RTP_RECOVERY_BURST_MIN_HOLD_MS,
                              RTP_RECOVERY_BURST_MAX_HOLD_MS);
+  if (rtp_decoder->reorder_gap_is_burst &&
+      rtp_decoder->reorder_burst_gap_hold_ms > rtp_decoder->reorder_active_hold_ms)
+    rtp_decoder->reorder_active_hold_ms = rtp_decoder->reorder_burst_gap_hold_ms;
 }
 
 size_t rtp_decoder_get_nacks(const RtpDecoder* decoder, uint32_t now_ms,
@@ -984,8 +999,7 @@ size_t rtp_decoder_get_nacks(const RtpDecoder* decoder, uint32_t now_ms,
     return 0;
 
   const uint32_t age_ms = now_ms - decoder->reorder_gap_started_ms;
-  const uint32_t hold_ms = decoder->reorder_gap_is_burst
-      ? decoder->reorder_burst_gap_hold_ms : decoder->reorder_gap_hold_ms;
+  const uint32_t hold_ms = decoder->reorder_active_hold_ms;
   const uint32_t response_ms = rtp_recovery_nack_response_ms(rtt_ms);
   if (age_ms < RTP_RECOVERY_NACK_REORDER_MS ||
       age_ms >= hold_ms || response_ms > hold_ms - age_ms)
@@ -1010,8 +1024,10 @@ size_t rtp_decoder_get_nacks(const RtpDecoder* decoder, uint32_t now_ms,
     const size_t slot = sequence % RTP_REORDER_WINDOW;
     if (decoder->reorder_used[slot] && decoder->reorder_sequences[slot] == sequence)
       continue;
+    const uint32_t retry_ms = decoder->nack_wait_ms[slot] > response_ms
+        ? decoder->nack_wait_ms[slot] : response_ms;
     if (decoder->nack_sent[slot] && decoder->nack_sent_sequence[slot] == sequence &&
-        now_ms - decoder->nack_sent_ms[slot] < response_ms)
+        now_ms - decoder->nack_sent_ms[slot] < retry_ms)
       continue;
 
     if (count == 0 || offset - base_offset > 16) {
@@ -1026,8 +1042,9 @@ size_t rtp_decoder_get_nacks(const RtpDecoder* decoder, uint32_t now_ms,
   return count;
 }
 
-uint32_t rtp_decoder_note_nack(RtpDecoder* decoder, uint32_t now_ms,
+uint32_t rtp_decoder_note_nack(RtpDecoder* decoder, uint32_t now_ms, uint32_t rtt_ms,
                                uint16_t packet_id, uint16_t bitmask) {
+  const uint16_t response_ms = (uint16_t)rtp_recovery_nack_response_ms(rtt_ms);
   uint32_t requested = (uint32_t)bitmask << 1 | 1u;
   uint32_t retries = 0;
   for (; requested != 0; ++packet_id, requested >>= 1) {
@@ -1041,6 +1058,7 @@ uint32_t rtp_decoder_note_nack(RtpDecoder* decoder, uint32_t now_ms,
     decoder->nack_sent[slot] = 1;
     decoder->nack_sent_sequence[slot] = packet_id;
     decoder->nack_sent_ms[slot] = now_ms;
+    decoder->nack_wait_ms[slot] = response_ms;
   }
   return retries;
 }

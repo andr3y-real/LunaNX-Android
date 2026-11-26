@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 
 namespace lunanx::video
 {
@@ -16,6 +17,27 @@ constexpr std::size_t MaximumQueuedAccessUnits(int frames_per_second)
     const int safe_fps = std::max(1, frames_per_second);
     return static_cast<std::size_t>(
         std::clamp((safe_fps + 11) / 12, 2, 6));
+}
+
+template<class Queue>
+std::size_t PicturesBeforeNewestKeyframe(const Queue& queue)
+{
+    for (std::size_t i = queue.size(); i > 0; --i)
+        if (queue[i - 1].idr)
+            return i - 1;
+    return queue.size();
+}
+
+constexpr bool AndroidCodecOutputStalled(std::uint64_t now_us, std::uint64_t last_output_us,
+                                         std::uint64_t oldest_input_us, std::uint64_t last_picture_us,
+                                         std::size_t pending)
+{
+    constexpr std::uint64_t stall_us = 350'000;
+    return pending >= 3 && oldest_input_us != 0 &&
+           now_us >= oldest_input_us && now_us - oldest_input_us >= stall_us &&
+           now_us >= last_output_us && now_us - last_output_us >= stall_us &&
+           last_picture_us > oldest_input_us && now_us >= last_picture_us &&
+           now_us - last_picture_us <= 250'000;
 }
 
 constexpr std::size_t ReadyFrameQueueCapacity()

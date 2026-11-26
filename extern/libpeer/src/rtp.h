@@ -138,6 +138,7 @@ struct RtpDecoder {
   uint32_t reorder_arrival_ms[RTP_REORDER_WINDOW];
   uint32_t nack_sent_ms[RTP_REORDER_WINDOW];
   uint16_t nack_sent_sequence[RTP_REORDER_WINDOW];
+  uint16_t nack_wait_ms[RTP_REORDER_WINDOW];
   uint8_t nack_sent[RTP_REORDER_WINDOW];
   uint16_t reorder_expected_sequence;
   uint8_t reorder_has_expected_sequence;
@@ -147,6 +148,7 @@ struct RtpDecoder {
   uint32_t forced_sequence_skips;
   uint32_t startup_sequence_rebases;
   uint32_t reorder_gap_started_ms;
+  uint32_t reorder_active_hold_ms;
   uint32_t reorder_gap_hold_ms;
   uint32_t reorder_burst_gap_hold_ms;
   uint32_t reorder_adaptive_holds;
@@ -197,7 +199,7 @@ void rtp_decoder_set_reorder_burst_grace_ms(RtpDecoder* rtp_decoder,
 int rtp_decoder_decode_retransmission(RtpDecoder* decoder, const uint8_t* data, size_t size);
 size_t rtp_decoder_get_nacks(const RtpDecoder* decoder, uint32_t now_ms,
                             uint32_t rtt_ms, RtcpNack entries[RTCP_MAX_NACK_ENTRIES]);
-uint32_t rtp_decoder_note_nack(RtpDecoder* decoder, uint32_t now_ms,
+uint32_t rtp_decoder_note_nack(RtpDecoder* decoder, uint32_t now_ms, uint32_t rtt_ms,
                                uint16_t packet_id, uint16_t bitmask);
 
 uint32_t rtp_get_ssrc(uint8_t* packet);
