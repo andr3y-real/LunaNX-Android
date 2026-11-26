@@ -75,11 +75,12 @@ void AndroidMicrophone::capture()
 void AndroidMicrophone::stop()
 {
     running_.store(false);
+    if (stream_)
+        AAudioStream_requestStop(stream_);
     if (worker_.joinable())
         worker_.join();
     if (stream_)
     {
-        AAudioStream_requestStop(stream_);
         AAudioStream_close(stream_);
         stream_ = nullptr;
     }

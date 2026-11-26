@@ -20,6 +20,11 @@ class ProtoWriter
     {
         if (value == 0)
             return *this;
+        return VarintAlways(field, value);
+    }
+
+    ProtoWriter& VarintAlways(std::uint32_t field, std::uint64_t value)
+    {
         Key(field, 0);
         PutVarint(value);
         return *this;

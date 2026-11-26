@@ -34,6 +34,8 @@ std::uint64_t TriggerToLuna(std::uint8_t value)
 
 std::int16_t AxisToXInput(float value)
 {
+    if (!std::isfinite(value))
+        return 0;
     const float clamped = std::clamp(value, -1.0f, 1.0f);
     return static_cast<std::int16_t>(std::lround(clamped * 32767.0f));
 }
@@ -55,10 +57,10 @@ std::vector<std::uint8_t> LunaInputEncoder::EncodeGamepad(const GamepadState& st
         .Varint(3, state.buttons)
         .Varint(4, TriggerToLuna(state.left_trigger))
         .Varint(5, TriggerToLuna(state.right_trigger))
-        .Varint(6, AxisToLuna(state.left_x))
-        .Varint(7, AxisToLuna(state.left_y))
-        .Varint(8, AxisToLuna(state.right_x))
-        .Varint(9, AxisToLuna(state.right_y))
+        .VarintAlways(6, AxisToLuna(state.left_x))
+        .VarintAlways(7, AxisToLuna(state.left_y))
+        .VarintAlways(8, AxisToLuna(state.right_x))
+        .VarintAlways(9, AxisToLuna(state.right_y))
         .Message(12, timing);
 
     ProtoWriter message;
@@ -87,6 +89,8 @@ std::vector<std::uint8_t> LunaInputEncoder::EncodeKeyEvent(const std::string& ke
 
 std::vector<std::uint8_t> LunaInputEncoder::EncodePointerMove(double x_percent, double y_percent)
 {
+    if (!std::isfinite(x_percent)) x_percent = 50.0;
+    if (!std::isfinite(y_percent)) y_percent = 50.0;
     const std::uint64_t now = WallClockMilliseconds();
     const std::uint64_t prev = pointer_seq_++;
     const std::uint64_t curr = pointer_seq_;

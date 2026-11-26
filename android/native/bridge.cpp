@@ -2,6 +2,7 @@
 #include <curl/curl.h>
 #include <jni.h>
 #include <qrcodegen.h>
+#include <cmath>
 
 #include "android_rumble.hpp"
 #include "core/app_paths.hpp"
@@ -47,6 +48,8 @@ int64_t last_report_ms = 0;
 
 std::string from_java(JNIEnv* env, jstring value)
 {
+    if (!value)
+        return {};
     const char* chars = env->GetStringUTFChars(value, nullptr);
     if (!chars)
         throw std::runtime_error("Não foi possível ler o texto.");
@@ -58,13 +61,17 @@ std::string from_java(JNIEnv* env, jstring value)
 jstring to_java(JNIEnv* env, const std::string& value)
 {
     auto bytes = env->NewByteArray(value.size());
+    if (!bytes)
+        return nullptr;
     env->SetByteArrayRegion(bytes, 0, value.size(), reinterpret_cast<const jbyte*>(value.data()));
     auto type = env->FindClass("java/lang/String");
-    auto constructor = env->GetMethodID(type, "<init>", "([BLjava/lang/String;)V");
+    auto constructor = type ? env->GetMethodID(type, "<init>", "([BLjava/lang/String;)V") : nullptr;
     auto charset = env->NewStringUTF("UTF-8");
-    auto string = static_cast<jstring>(env->NewObject(type, constructor, bytes, charset));
-    env->DeleteLocalRef(charset);
-    env->DeleteLocalRef(type);
+    jstring string = (type && constructor && charset)
+        ? static_cast<jstring>(env->NewObject(type, constructor, bytes, charset))
+        : nullptr;
+    if (charset) env->DeleteLocalRef(charset);
+    if (type) env->DeleteLocalRef(type);
     env->DeleteLocalRef(bytes);
     return string;
 }
@@ -72,13 +79,20 @@ jstring to_java(JNIEnv* env, const std::string& value)
 jobjectArray strings(JNIEnv* env, const std::vector<std::string>& values)
 {
     auto type = env->FindClass("java/lang/String");
+    if (!type)
+        return nullptr;
     auto array = env->NewObjectArray(values.size(), type, nullptr);
     env->DeleteLocalRef(type);
+    if (!array)
+        return nullptr;
     for (size_t i = 0; i < values.size(); ++i)
     {
         auto text = to_java(env, values[i]);
-        env->SetObjectArrayElement(array, i, text);
-        env->DeleteLocalRef(text);
+        if (text)
+        {
+            env->SetObjectArrayElement(array, i, text);
+            env->DeleteLocalRef(text);
+        }
     }
     return array;
 }
@@ -88,9 +102,19 @@ void report_error(JNIEnv* env, const char* message)
     if (env->ExceptionCheck())
         return;
     auto type = env->FindClass("java/lang/IllegalStateException");
-    auto constructor = env->GetMethodID(type, "<init>", "(Ljava/lang/String;)V");
-    auto text = to_java(env, message);
-    env->Throw(static_cast<jthrowable>(env->NewObject(type, constructor, text)));
+    auto constructor = type ? env->GetMethodID(type, "<init>", "(Ljava/lang/String;)V") : nullptr;
+    auto text = to_java(env, message ? message : "Erro desconhecido.");
+    if (type && constructor && text)
+    {
+        auto ex = static_cast<jthrowable>(env->NewObject(type, constructor, text));
+        if (ex)
+        {
+            env->Throw(ex);
+            env->DeleteLocalRef(ex);
+        }
+    }
+    if (text) env->DeleteLocalRef(text);
+    if (type) env->DeleteLocalRef(type);
 }
 
 std::string game_key(const luna::Game& game)
@@ -261,8 +285,8 @@ jobjectArray connect(JNIEnv* env, const luna::DeviceRegistration& registration)
         featured_game = std::move(featured);
         catalog_explored = false;
         results = catalog;
+        return game_rows(env);
     }
-    return game_rows(env);
 }
 
 jbyteArray qr_code(JNIEnv* env, const std::string& url)
@@ -353,7 +377,10 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeSignIn)(
                 env->DeleteLocalRef(code);
                 env->DeleteLocalRef(url);
                 env->DeleteLocalRef(qr);
+                if (env->ExceptionCheck())
+                    throw std::runtime_error("Falha na interface de login.");
             }, is_cancelled);
+        env->DeleteLocalRef(type);
         if (is_cancelled())
             return nullptr;
         if (!luna::AmazonAuth::Save(registration))
@@ -376,10 +403,10 @@ extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeSignOut)(JNIEnv* env, jobject
         catalog_index.clear();
         featured_game.clear();
         catalog_explored = false;
+        results.clear();
+        top_games.clear();
+        recent_shelves.clear();
     }
-    results.clear();
-    top_games.clear();
-    recent_shelves.clear();
     try
     {
         luna::DeviceRegistration registration;
@@ -400,28 +427,33 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeSearch)(JNIEnv* env, 
     try
     {
         auto query = from_java(env, text);
-        if (!client)
-            throw std::runtime_error("Entre na conta Amazon primeiro.");
-        if (query.empty())
+        std::shared_ptr<luna::LunaClient> active;
         {
             std::lock_guard lock(catalog_mutex);
-            results = catalog;
+            active = client;
+            if (!active)
+                throw std::runtime_error("Entre na conta Amazon primeiro.");
+            if (query.empty())
+            {
+                results = catalog;
+                return game_rows(env);
+            }
         }
-        else
+        std::vector<luna::Game> matches;
+        std::string server_error;
+        try
         {
-            std::vector<luna::Game> matches;
-            std::string server_error;
-            try
-            {
-                matches = client->SearchGames(query);
-            }
-            catch (const luna::LunaError& error)
-            {
-                server_error = error.what();
-            }
-            std::lock_guard lock(catalog_mutex);
-            for (const auto& game : matches)
-                merge_catalog_game(catalog, catalog_index, game);
+            matches = active->SearchGames(query);
+        }
+        catch (const luna::LunaError& error)
+        {
+            server_error = error.what();
+        }
+        std::lock_guard lock(catalog_mutex);
+        if (client != active)
+            return game_rows(env);
+        for (const auto& game : matches)
+            merge_catalog_game(catalog, catalog_index, game);
             std::vector<std::pair<int, const luna::Game*>> local;
             for (const auto& game : catalog)
             {
@@ -447,8 +479,7 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeSearch)(JNIEnv* env, 
             if (combined.empty() && !server_error.empty())
                 throw luna::LunaError(server_error);
             results = std::move(combined);
-        }
-        return game_rows(env);
+            return game_rows(env);
     }
     catch (const std::exception& error)
     {
@@ -496,6 +527,7 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeSection)(JNIEnv* env,
 
 extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeLibraryInfo)(JNIEnv* env, jobject)
 {
+    std::lock_guard lock(catalog_mutex);
     if (!client)
         return strings(env, {"", "", "", "", "", "0"});
     const auto profile = client->Profile();
@@ -505,7 +537,6 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeLibraryInfo)(JNIEnv* 
         label = "Prime";
     if (plan == luna::AccountPlan::Premium)
         label = "Luna Premium";
-    std::lock_guard lock(catalog_mutex);
     const auto included = std::count_if(catalog.begin(), catalog.end(), [plan](const auto& game) {
         return luna::IsIncludedInPlan(game, plan);
     });
@@ -530,12 +561,16 @@ extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeExplore)(
                 known.insert(entry.first);
         }
         const auto type = env->GetObjectClass(activity);
-        const auto continue_exploring = env->GetMethodID(type, "canExploreCatalog", "(J)Z");
-        const auto on_batch = env->GetMethodID(type, "catalogBatchAdded", "(J)V");
+        const auto continue_exploring = type ? env->GetMethodID(type, "canExploreCatalog", "(J)Z") : nullptr;
+        const auto on_batch = type ? env->GetMethodID(type, "catalogBatchAdded", "(J)V") : nullptr;
+        if (type) env->DeleteLocalRef(type);
         if (!continue_exploring || !on_batch)
             return JNI_FALSE;
         const auto keep_going = [&] {
-            return env->CallBooleanMethod(activity, continue_exploring, generation) == JNI_TRUE;
+            if (env->ExceptionCheck()) return false;
+            bool ok = env->CallBooleanMethod(activity, continue_exploring, generation) == JNI_TRUE;
+            if (env->ExceptionCheck()) { env->ExceptionClear(); return false; }
+            return ok;
         };
         if (!keep_going())
             return JNI_FALSE;
@@ -550,8 +585,11 @@ extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeExplore)(
                 for (auto& game : batch)
                     added = merge_catalog_game(catalog, catalog_index, game) || added;
             }
-            if (added)
+            if (added && !env->ExceptionCheck())
+            {
                 env->CallVoidMethod(activity, on_batch, generation);
+                if (env->ExceptionCheck()) env->ExceptionClear();
+            }
         }, keep_going);
         if (!keep_going())
             return JNI_FALSE;
@@ -567,33 +605,72 @@ extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeExplore)(
     }
 }
 
-extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeGameDetail)(
-    JNIEnv* env, jobject, jint index)
+namespace
+{
+std::optional<luna::Game> find_game_by_key_locked(const std::string& key)
+{
+    for (const auto& g : results)
+        if (game_key(g) == key) return g;
+    for (const auto& g : catalog)
+        if (game_key(g) == key) return g;
+    for (const auto& g : top_games)
+        if (game_key(g) == key) return g;
+    for (const auto& shelf : recent_shelves)
+        for (const auto& g : shelf.games)
+            if (game_key(g) == key) return g;
+    return std::nullopt;
+}
+
+jobjectArray build_detail_array(JNIEnv* env, const luna::Game& game)
+{
+    std::string genres;
+    for (size_t i = 0; i < game.genres.size(); ++i)
+    {
+        if (i > 0) genres += ", ";
+        genres += game.genres[i];
+    }
+    return strings(env, {
+        game.title,
+        game.publisher,
+        game.developer,
+        game.description,
+        game.age_rating,
+        genres,
+        game.image_portrait,
+        game.image_landscape,
+        game.offer_tag,
+        game.premium_only ? "1" : "0",
+    });
+}
+} // namespace
+
+extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeGameDetailByKey)(
+    JNIEnv* env, jobject, jstring key)
 {
     try
     {
-        if (!client || index < 0 || static_cast<size_t>(index) >= results.size())
-            throw std::runtime_error("O jogo selecionado não está mais disponível.");
-        auto game = client->FetchGameDetail(results[index]);
-        results[index] = game;
-        std::string genres;
-        for (size_t i = 0; i < game.genres.size(); ++i)
+        std::string target_key = from_java(env, key);
+        std::shared_ptr<luna::LunaClient> active;
+        luna::Game target;
         {
-            if (i > 0) genres += ", ";
-            genres += game.genres[i];
+            std::lock_guard lock(catalog_mutex);
+            active = client;
+            if (!active)
+                throw std::runtime_error("Entre na conta Amazon primeiro.");
+            auto found = find_game_by_key_locked(target_key);
+            if (!found)
+                throw std::runtime_error("O jogo selecionado não está mais disponível.");
+            target = *found;
         }
-        return strings(env, {
-            game.title,
-            game.publisher,
-            game.developer,
-            game.description,
-            game.age_rating,
-            genres,
-            game.image_portrait,
-            game.image_landscape,
-            game.offer_tag,
-            game.premium_only ? "1" : "0",
-        });
+        auto game = active->FetchGameDetail(target, false);
+        {
+            std::lock_guard lock(catalog_mutex);
+            for (auto& g : results)
+                if (game_key(g) == target_key) g = game;
+            for (auto& g : catalog)
+                if (game_key(g) == target_key) g = game;
+        }
+        return build_detail_array(env, game);
     }
     catch (const std::exception& error)
     {
@@ -602,26 +679,105 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeGameDetail)(
     }
 }
 
+extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeGameDetail)(
+    JNIEnv* env, jobject, jint index)
+{
+    try
+    {
+        std::shared_ptr<luna::LunaClient> active;
+        luna::Game target;
+        {
+            std::lock_guard lock(catalog_mutex);
+            active = client;
+            if (!active || index < 0 || static_cast<size_t>(index) >= results.size())
+                throw std::runtime_error("O jogo selecionado não está mais disponível.");
+            target = results[index];
+        }
+        auto game = active->FetchGameDetail(target, false);
+        {
+            std::lock_guard lock(catalog_mutex);
+            if (static_cast<size_t>(index) < results.size() && game_key(results[index]) == game_key(game))
+                results[index] = game;
+        }
+        return build_detail_array(env, game);
+    }
+    catch (const std::exception& error)
+    {
+        report_error(env, error.what());
+        return nullptr;
+    }
+}
+
+static void start_game_session(
+    JNIEnv* env, std::shared_ptr<luna::LunaClient> active, const luna::Game& target,
+    jobject surface, jboolean prefer_pt_br, jint height, jint fps, jint bitrate_mbps)
+{
+    {
+        std::lock_guard<std::mutex> lock(session_mutex);
+        if (session)
+            throw std::runtime_error("Ainda há uma sessão em andamento.");
+    }
+    std::unique_ptr<ANativeWindow, decltype(&ANativeWindow_release)> window(
+        ANativeWindow_fromSurface(env, surface), ANativeWindow_release);
+    if (!window)
+        throw std::runtime_error("A tela do jogo não está disponível.");
+    auto next = std::make_unique<LunaStreamSession>(
+        std::move(active), target, window.get(), prefer_pt_br == JNI_TRUE, height, fps, bitrate_mbps);
+    next->start();
+    std::lock_guard<std::mutex> lock(session_mutex);
+    if (session)
+    {
+        next->request_stop();
+        throw std::runtime_error("Ainda há uma sessão em andamento.");
+    }
+    playing = target;
+    session = std::move(next);
+    sent_input = false;
+    previous_input = {};
+    last_report_ms = 0;
+}
+
+extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeStartByKey)(
+    JNIEnv* env, jobject, jstring key, jobject surface, jboolean prefer_pt_br, jint height, jint fps, jint bitrate_mbps)
+{
+    try
+    {
+        std::string target_key = from_java(env, key);
+        std::shared_ptr<luna::LunaClient> active;
+        luna::Game target;
+        {
+            std::lock_guard lock(catalog_mutex);
+            active = client;
+            if (!active)
+                throw std::runtime_error("Entre na conta Amazon primeiro.");
+            auto found = find_game_by_key_locked(target_key);
+            if (!found)
+                throw std::runtime_error("O jogo selecionado não está mais disponível.");
+            target = *found;
+        }
+        start_game_session(env, std::move(active), target, surface, prefer_pt_br, height, fps, bitrate_mbps);
+    }
+    catch (const std::exception& error)
+    {
+        report_error(env, error.what());
+    }
+}
+
 extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeStart)(
     JNIEnv* env, jobject, jint index, jobject surface, jboolean prefer_pt_br, jint height, jint fps, jint bitrate_mbps)
 {
     try
     {
-        if (!client || index < 0 || static_cast<size_t>(index) >= results.size())
-            throw std::runtime_error("O jogo selecionado não está mais disponível.");
-        if (session)
-            throw std::runtime_error("Ainda há uma sessão em andamento.");
-
-        std::unique_ptr<ANativeWindow, decltype(&ANativeWindow_release)> window(
-            ANativeWindow_fromSurface(env, surface), ANativeWindow_release);
-        if (!window)
-            throw std::runtime_error("A tela do jogo não está disponível.");
-        auto next = std::make_unique<LunaStreamSession>(
-            client, results[index], window.get(), prefer_pt_br == JNI_TRUE, height, fps, bitrate_mbps);
-        next->start();
-        playing = results[index];
-        session = std::move(next);
-        sent_input = false;
+        std::shared_ptr<luna::LunaClient> active;
+        luna::Game target;
+        {
+            std::lock_guard lock(catalog_mutex);
+            active = client;
+            if (!active || index < 0 || static_cast<size_t>(index) >= results.size())
+                throw std::runtime_error("O jogo selecionado não está mais disponível.");
+            target = results[index];
+        }
+        start_game_session(env, std::move(active), target, surface, prefer_pt_br, height, fps, bitrate_mbps);
     }
     catch (const std::exception& error)
     {
@@ -648,10 +804,15 @@ extern "C" JNIEXPORT jint JNICALL JNI_METHOD(nativeTick)(
     if (!session)
         return 0;
     session->poll();
+    const auto clamp_trigger = [](jfloat val) -> uint8_t {
+        if (!std::isfinite(val)) return 0;
+        float clamped = std::clamp(val, 0.0f, 1.0f);
+        return static_cast<uint8_t>(std::lround(clamped * 255.0f));
+    };
     const input::GamepadState current {
         static_cast<uint16_t>(buttons),
-        static_cast<uint8_t>(lt * 255),
-        static_cast<uint8_t>(rt * 255),
+        clamp_trigger(lt),
+        clamp_trigger(rt),
         input::AxisToXInput(x),
         input::AxisToXInput(y),
         input::AxisToXInput(z),
@@ -724,10 +885,18 @@ extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeSetVideoSurface)(
 extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeSendKey)(
     JNIEnv* env, jobject, jstring key, jboolean pressed)
 {
-    std::lock_guard<std::mutex> lock(session_mutex);
-    if (!session || !key)
+    try
+    {
+        std::string k = from_java(env, key);
+        std::lock_guard<std::mutex> lock(session_mutex);
+        if (!session || k.empty())
+            return JNI_FALSE;
+        return session->send_key(k, pressed == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+    }
+    catch (const std::exception&)
+    {
         return JNI_FALSE;
-    return session->send_key(from_java(env, key), pressed == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+    }
 }
 
 extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeSendPointerMove)(
@@ -750,9 +919,22 @@ extern "C" JNIEXPORT jboolean JNICALL JNI_METHOD(nativeSendPointerButton)(
 
 extern "C" JNIEXPORT void JNICALL JNI_METHOD(nativeStop)(JNIEnv*, jobject)
 {
-    std::lock_guard<std::mutex> lock(session_mutex);
-    if (session && sent_input)
-        session->send_gamepad({});
-    session.reset();
-    playing.reset();
+    std::unique_ptr<LunaStreamSession> dead;
+    bool was_sent = false;
+    {
+        std::lock_guard<std::mutex> lock(session_mutex);
+        dead = std::move(session);
+        was_sent = sent_input;
+        playing.reset();
+        sent_input = false;
+        previous_input = {};
+        last_report_ms = 0;
+    }
+    if (dead)
+    {
+        if (was_sent)
+            dead->send_gamepad({});
+        dead->request_stop();
+        dead.reset();
+    }
 }

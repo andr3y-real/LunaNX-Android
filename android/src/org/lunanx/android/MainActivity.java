@@ -180,9 +180,14 @@ public final class MainActivity extends Activity {
     private int section;
     private volatile boolean showMetrics;
     private Boolean touchControlsOverride;
-    private ScheduledFuture<?> playbackTicker;
+    private volatile ScheduledFuture<?> playbackTicker;
     private PlaybackReport playbackReport;
     private String playerTitle;
+    private String selectedGameKey;
+    private final java.util.concurrent.ExecutorService pointerWorker =
+        java.util.concurrent.Executors.newSingleThreadExecutor();
+    private long lastPointerMoveAt;
+    private int activePointerId = -1;
     private int padButtons;
     private int hatButtons;
     private int controllerDevice = -1;
@@ -215,11 +220,14 @@ public final class MainActivity extends Activity {
     private native String[] nativeLibraryInfo();
     private native boolean nativeExplore(long generation, boolean force);
     private native String[] nativeGameDetail(int index);
+    private native String[] nativeGameDetailByKey(String key);
     private native boolean nativeSendKey(String key, boolean pressed);
     private native boolean nativeSendPointerMove(double xPercent, double yPercent);
     private native boolean nativeSendPointerButton(boolean pressed);
     private native void nativeStart(int index, Surface surface, boolean preferBrazilianPortuguese,
                                     int height, int fps, int bitrateMbps);
+    private native void nativeStartByKey(String key, Surface surface, boolean preferBrazilianPortuguese,
+                                         int height, int fps, int bitrateMbps);
     private native int nativeTick(int buttons, float lt, float rt, float lx, float ly, float rx, float ry);
     private native String[] nativeStatus();
     private native boolean nativeSetVideoSurface(Surface surface);
@@ -700,8 +708,8 @@ public final class MainActivity extends Activity {
                 }
             }
         }
-        showLibrary(list.toArray(new String[0]));
-        favoritesScreen = true;
+        search = "";
+        showLibrary(list.toArray(new String[0]), true);
         if (list.isEmpty() && libraryStatus != null) {
             libraryStatus.setText("Nenhum jogo favoritado ainda. Abra um jogo e toque no ♥!");
         }
@@ -1264,8 +1272,7 @@ public final class MainActivity extends Activity {
                     loadingGames = false;
                     for (int offset = 0; offset < rows.length; offset += GAME_FIELDS) {
                         if (!key.equals(rows[offset + GAME_KEY])) continue;
-                        games = rows;
-                        showGameDetail(offset / GAME_FIELDS);
+                        showGameDetailFromRows(rows, offset / GAME_FIELDS);
                         return;
                     }
                     libraryStatus.setText("Este jogo não está mais disponível.");
@@ -1280,10 +1287,14 @@ public final class MainActivity extends Activity {
     }
 
     private void showLibrary(String[] library) {
+        showLibrary(library, false);
+    }
+
+    private void showLibrary(String[] library, boolean isFavorites) {
         home = false;
         settingsScreen = false;
-        favoritesScreen = false;
-        games = library;
+        favoritesScreen = isFavorites;
+        games = library == null ? new String[0] : library;
         loadingGames = false;
         libraryVisible = true;
         listLayout = getPreferences(MODE_PRIVATE).getBoolean(LIST_LAYOUT_PREF, false);
@@ -1679,10 +1690,10 @@ public final class MainActivity extends Activity {
 
     private void renderGames() {
         int count = games.length / GAME_FIELDS;
-        String label = search.isEmpty() ? SECTIONS[section] : "Resultados";
+        String label = favoritesScreen ? "Favoritos" : (search.isEmpty() ? SECTIONS[section] : "Resultados");
         String status = label + " · " + (count == 0 ? "Nenhum jogo encontrado" :
             count + (count == 1 ? " jogo" : " jogos"));
-        if (search.isEmpty() && section == PREMIUM_GAMES && !libraryInfo[3].isEmpty())
+        if (!favoritesScreen && search.isEmpty() && section == PREMIUM_GAMES && !libraryInfo[3].isEmpty())
             status += " · Requer Luna Premium";
         libraryStatus.setText(status);
         Integer[] order = new Integer[count];
@@ -1805,7 +1816,7 @@ public final class MainActivity extends Activity {
     }
 
     private void refreshDiscoveredGames(long generation) {
-        if (!canExploreCatalog(generation) || !libraryVisible || loadingGames || settingsScreen) return;
+        if (!canExploreCatalog(generation) || !libraryVisible || loadingGames || settingsScreen || favoritesScreen) return;
         if (home) {
             refreshHomeRows();
             return;
@@ -2130,12 +2141,17 @@ public final class MainActivity extends Activity {
     }
 
     private void showGameDetail(int index) {
-        if (games == null || index < 0 || index * GAME_FIELDS + GAME_FIELDS > games.length) return;
+        showGameDetailFromRows(games, index);
+    }
+
+    private void showGameDetailFromRows(String[] rowSource, int index) {
+        if (rowSource == null || index < 0 || index * GAME_FIELDS + GAME_FIELDS > rowSource.length) return;
         closeGameDetail();
         int base = index * GAME_FIELDS;
-        String initialTitle = games[base];
-        String initialPortrait = games[base + 2];
-        String initialLandscape = games[base + 3];
+        String initialTitle = rowSource[base];
+        String initialPortrait = rowSource[base + 2];
+        String initialLandscape = rowSource[base + 3];
+        final String gameKey = rowSource[base + GAME_KEY];
 
         FrameLayout overlay = new FrameLayout(this);
         overlay.setBackgroundColor(0xff0b0a10);
@@ -2159,12 +2175,12 @@ public final class MainActivity extends Activity {
         TextView brand = text("LunaNX", 18, Color.WHITE);
         brand.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         LinearLayout.LayoutParams brandLp = new LinearLayout.LayoutParams(0, -2, 1f);
-        final String gameKey = games[base + GAME_KEY];
         boolean initialFav = isFavorite(gameKey);
         TextView favTop = text(initialFav ? "♥" : "♡", 20, initialFav ? 0xfff43f5e : 0xffe2e8f0);
         favTop.setPadding(dp(10), dp(4), dp(10), dp(4));
         TextView moreTop = text("⋮", 20, 0xffe2e8f0);
         moreTop.setPadding(dp(8), dp(4), dp(4), dp(4));
+        moreTop.setOnClickListener(v -> showFramingSettings());
         topBar.addView(backBtn);
         topBar.addView(brand, brandLp);
         topBar.addView(favTop);
@@ -2180,8 +2196,9 @@ public final class MainActivity extends Activity {
         playCircle.setBackground(rounded(0x99000000, 100));
         bannerWrap.addView(playCircle, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
         bannerWrap.setOnClickListener(v -> {
+            if (player != null) return;
             closeGameDetail();
-            showPlayer(index);
+            showPlayerByKey(gameKey, initialTitle);
         });
         body.addView(bannerWrap, new LinearLayout.LayoutParams(-1, dp(170)));
 
@@ -2228,9 +2245,10 @@ public final class MainActivity extends Activity {
         startBtn.setGravity(Gravity.CENTER);
         startBtn.setBackground(rounded(0xffc4b5fd, 100));
         startBtn.setOnClickListener(v -> {
+            if (player != null) return;
             animateTap(startBtn);
             closeGameDetail();
-            showPlayer(index);
+            showPlayerByKey(gameKey, initialTitle);
         });
         actionRow.addView(startBtn, new LinearLayout.LayoutParams(0, dp(46), 1f));
 
@@ -2258,7 +2276,9 @@ public final class MainActivity extends Activity {
         };
         favTop.setOnClickListener(v -> { animateTap(favTop); syncFav.run(); });
         heartBtn.setOnClickListener(v -> { animateTap(heartBtn); syncFav.run(); });
-        actionRow.addView(heartBtn, cLp);
+        LinearLayout.LayoutParams heartLp = new LinearLayout.LayoutParams(dp(46), dp(46));
+        heartLp.setMarginStart(dp(10));
+        actionRow.addView(heartBtn, heartLp);
         body.addView(actionRow, aLp);
 
         // Sinopse
@@ -2328,22 +2348,32 @@ public final class MainActivity extends Activity {
             .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
 
         worker.execute(() -> {
-            String[] d = nativeGameDetail(index);
-            if (d == null || d.length < 10) return;
+            String[] d = null;
+            try {
+                d = nativeGameDetailByKey(gameKey);
+            } catch (Exception ignored) {
+            }
+            final String[] detail = d;
             runOnUiThread(() -> {
-                if (gameDetailOverlay != overlay) return;
-                if (!d[0].isEmpty()) titleView.setText(d[0]);
-                pubSub.setText(d[1].isEmpty() ? "Amazon Luna" : d[1]);
-                genreSub.setText(d[5]);
-                if ("1".equals(d[9]) || !d[8].isEmpty()) {
-                    badge.setText("👑 " + (d[8].isEmpty() ? "Premium" : d[8]));
+                if (destroyed || gameDetailOverlay != overlay) return;
+                if (detail == null || detail.length < 10) {
+                    pubSub.setText("Amazon Luna");
+                    synopsis.setText("Sem sinopse disponível para este título.");
+                    ratingDesc.setText("Livre");
+                    return;
+                }
+                if (!detail[0].isEmpty()) titleView.setText(detail[0]);
+                pubSub.setText(detail[1].isEmpty() ? "Amazon Luna" : detail[1]);
+                genreSub.setText(detail[5]);
+                if ("1".equals(detail[9]) || !detail[8].isEmpty()) {
+                    badge.setText("Premium" + (detail[8].isEmpty() ? "" : " · " + detail[8]));
                     badge.setVisibility(View.VISIBLE);
                 }
-                synopsis.setText(d[3].isEmpty() ? "Sem sinopse disponível para este título." : d[3]);
-                pubVal.setText(d[1].isEmpty() ? "—" : d[1]);
-                devVal.setText(d[2].isEmpty() ? "—" : d[2]);
+                synopsis.setText(detail[3].isEmpty() ? "Sem sinopse disponível para este título." : detail[3]);
+                pubVal.setText(detail[1].isEmpty() ? "—" : detail[1]);
+                devVal.setText(detail[2].isEmpty() ? "—" : detail[2]);
                 chipsRow.removeAllViews();
-                for (String g : d[5].split(",")) {
+                for (String g : detail[5].split(",")) {
                     String trimmed = g.trim();
                     if (trimmed.isEmpty() || chipsRow.getChildCount() >= 4) continue;
                     TextView chip = text(trimmed, 11, 0xffe2e8f0);
@@ -2355,22 +2385,29 @@ public final class MainActivity extends Activity {
                     chLp.setMarginEnd(dp(6));
                     chipsRow.addView(chip, chLp);
                 }
-                String age = d[4].isEmpty() ? "Livre" : d[4];
+                String age = detail[4].isEmpty() ? "Livre" : detail[4];
                 ratingBadge.setText(age.length() > 3 ? age.substring(0, 2) : age);
                 ratingDesc.setText(age);
-                if (!d[7].isEmpty()) bindCover(banner, d[7]);
-                if (!d[6].isEmpty()) bindCover(poster, d[6]);
+                if (!detail[7].isEmpty()) bindCover(banner, detail[7]);
+                if (!detail[6].isEmpty()) bindCover(poster, detail[6]);
             });
         });
     }
 
     private void showPlayer(int index) {
+        if (games == null || index < 0 || index * GAME_FIELDS + GAME_FIELDS > games.length) return;
+        selectedGame = index;
+        showPlayerByKey(games[index * GAME_FIELDS + GAME_KEY], games[index * GAME_FIELDS]);
+    }
+
+    private void showPlayerByKey(String key, String title) {
+        if (player != null) return;
         libraryVisible = false;
         catalogPaused = true;
         ++catalogGeneration;
         ++artworkGeneration;
-        selectedGame = index;
-        playerTitle = games[index * GAME_FIELDS];
+        selectedGameKey = key;
+        playerTitle = title;
         playerProfile = StreamProfile.active(getPreferences(MODE_PRIVATE));
         playbackReport = new PlaybackReport(SystemClock.elapsedRealtime(),
             playerProfile.name + " · " + playerProfile.videoSummary());
@@ -2409,9 +2446,12 @@ public final class MainActivity extends Activity {
     @Override public void onConfigurationChanged(Configuration config) {
         super.onConfigurationChanged(config);
         if (libraryVisible && !loadingGames) {
+            gameDetailOverlay = null;
+            favoritesDirty = false;
             if (settingsScreen) showSettings();
-            else if (home) showHome(homeRows, true);
-            else showLibrary(games);
+            else if (favoritesScreen) showFavorites();
+            else if (home && homeRows != null) showHome(homeRows, true);
+            else showLibrary(games, false);
         }
         if (player != null && config.orientation == Configuration.ORIENTATION_LANDSCAPE)
             attachPlayerSurface();
@@ -2464,12 +2504,15 @@ public final class MainActivity extends Activity {
                 return true;
             }
             @Override public boolean onDoubleTap(MotionEvent event) {
-                if (player == current && !launching && !cleanScreenMode) toggleSettingsCard(current);
+                if (player != current || launching) return true;
+                if (cleanScreenMode) toggleCleanScreen(current);
+                else toggleSettingsCard(current);
                 return true;
             }
         });
         current.setOnTouchListener((view, event) -> {
-            if (player == current && !launching && directTouchEnabled && !gamepadConnected && activeHudCard == null) {
+            if (player == current && !launching && !cleanScreenMode && directTouchEnabled && !gamepadConnected &&
+                activeHudCard == null && !(playerShortcutsVisible && event.getY() < dp(68))) {
                 dispatchDirectTouch(event);
             }
             return gestures.onTouchEvent(event);
@@ -2500,6 +2543,9 @@ public final class MainActivity extends Activity {
         hudPill = text("Cloud Gaming  •  ● Jogando", 13, 0xffeef2f6);
         hudPill.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         hudPill.setPadding(dp(8), 0, 0, 0);
+        hudPill.setMaxWidth(dp(240));
+        hudPill.setSingleLine(true);
+        hudPill.setEllipsize(android.text.TextUtils.TruncateAt.END);
         pillWrap.addView(hudPill);
         hudPillWrap = pillWrap;
         current.addView(pillWrap, floating(-2, dp(38), Gravity.TOP | Gravity.CENTER_HORIZONTAL, 16));
@@ -2508,16 +2554,26 @@ public final class MainActivity extends Activity {
         rightHud.setOrientation(LinearLayout.HORIZONTAL);
         rightHud.setGravity(Gravity.CENTER_VERTICAL);
         FrameLayout padWrap = playerCircleVectorIcon("gamepad", gamepadConnected || touchControlsEnabled(), "Mostrar ou ocultar controles", () -> {
-            touchControlsOverride = !touchControlsEnabled();
-            updatePlayerOverlays();
-            syncHudIndicators();
+            if (gamepadConnected) {
+                Toast.makeText(this, "Controle físico conectado: controles virtuais desativados.", Toast.LENGTH_SHORT).show();
+            } else {
+                touchControlsOverride = !touchControlsEnabled();
+                updatePlayerOverlays();
+                syncHudIndicators();
+            }
+            revealPlayerShortcuts();
         });
         padHudIcon = (HudIconView) padWrap.getChildAt(0);
         showTouchButton = padWrap;
 
         FrameLayout touchWrap = playerCircleVectorIcon("pointer", directTouchEnabled && !gamepadConnected, "Ativar ou desativar toque tátil", () -> {
-            directTouchEnabled = !directTouchEnabled;
-            syncHudIndicators();
+            if (gamepadConnected) {
+                Toast.makeText(this, "Toque tátil fica desativado com controle físico.", Toast.LENGTH_SHORT).show();
+            } else {
+                directTouchEnabled = !directTouchEnabled;
+                syncHudIndicators();
+            }
+            revealPlayerShortcuts();
         });
         touchHudIcon = (HudIconView) touchWrap.getChildAt(0);
 
@@ -2663,22 +2719,41 @@ public final class MainActivity extends Activity {
         int w = playerSurface.getWidth();
         int h = playerSurface.getHeight();
         if (w <= 0 || h <= 0) return;
+        int action = event.getActionMasked();
+        int ptrIdx = event.getActionIndex();
+        int ptrId = event.getPointerId(ptrIdx);
+        if (action == MotionEvent.ACTION_DOWN) {
+            activePointerId = ptrId;
+        } else if (action == MotionEvent.ACTION_MOVE) {
+            ptrIdx = activePointerId == -1 ? 0 : event.findPointerIndex(activePointerId);
+            if (ptrIdx < 0) return;
+            long now = SystemClock.uptimeMillis();
+            if (now - lastPointerMoveAt < 16) return;
+            lastPointerMoveAt = now;
+        } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            activePointerId = -1;
+        } else if (action == MotionEvent.ACTION_POINTER_UP && ptrId == activePointerId) {
+            activePointerId = -1;
+            action = MotionEvent.ACTION_UP;
+        } else {
+            return;
+        }
         float sx = playerSurface.getScaleX() <= 0 ? 1f : playerSurface.getScaleX();
         float sy = playerSurface.getScaleY() <= 0 ? 1f : playerSurface.getScaleY();
         float vw = w * sx;
         float vh = h * sy;
         float left = (player.getWidth() - vw) / 2f;
         float top = (player.getHeight() - vh) / 2f;
-        final double xPct = Math.max(0.0, Math.min(100.0, (event.getX() - left) * 100.0 / vw));
-        final double yPct = Math.max(0.0, Math.min(100.0, (event.getY() - top) * 100.0 / vh));
-        int action = event.getActionMasked();
-        worker.execute(() -> {
-            if (action == MotionEvent.ACTION_DOWN) {
+        final double xPct = Math.max(0.0, Math.min(100.0, (event.getX(ptrIdx) - left) * 100.0 / vw));
+        final double yPct = Math.max(0.0, Math.min(100.0, (event.getY(ptrIdx) - top) * 100.0 / vh));
+        final int finalAction = action;
+        pointerWorker.execute(() -> {
+            if (finalAction == MotionEvent.ACTION_DOWN) {
                 nativeSendPointerMove(xPct, yPct);
                 nativeSendPointerButton(true);
-            } else if (action == MotionEvent.ACTION_MOVE) {
+            } else if (finalAction == MotionEvent.ACTION_MOVE) {
                 nativeSendPointerMove(xPct, yPct);
-            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            } else if (finalAction == MotionEvent.ACTION_UP || finalAction == MotionEvent.ACTION_CANCEL) {
                 nativeSendPointerMove(xPct, yPct);
                 nativeSendPointerButton(false);
             }
@@ -2693,20 +2768,30 @@ public final class MainActivity extends Activity {
     }
 
     private void closeActiveHudCard() {
-        if (activeHudCard == null || player == null) return;
+        if (activeHudCard == null) return;
         View card = activeHudCard;
         activeHudCard = null;
         if ("keyboard".equals(card.getTag())) {
+            View focused = card.findFocus();
+            View tokenTarget = focused != null ? focused : card;
             android.view.inputmethod.InputMethodManager imm =
                 (android.view.inputmethod.InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-            if (imm != null) imm.hideSoftInputFromWindow(card.getWindowToken(), 0);
+            if (imm != null) imm.hideSoftInputFromWindow(tokenTarget.getWindowToken(), 0);
+            if (focused != null) focused.clearFocus();
             card.clearFocus();
-            enterPlayerFullscreen();
+            if (player != null) enterPlayerFullscreen();
         }
         syncHudIndicators();
+        if (player == null) {
+            if (card.getParent() instanceof android.view.ViewGroup)
+                ((android.view.ViewGroup) card.getParent()).removeView(card);
+            return;
+        }
+        if (!cleanScreenMode) revealPlayerShortcuts();
+        final FrameLayout host = player;
         card.animate().alpha(0f).translationY(-dp(12)).scaleX(0.95f).scaleY(0.95f)
             .setDuration(160).withEndAction(() -> {
-                if (player != null) player.removeView(card);
+                if (card.getParent() == host) host.removeView(card);
             }).start();
     }
 
@@ -2732,7 +2817,15 @@ public final class MainActivity extends Activity {
         bg.setStroke(dp(1), 0x28ffffff);
         bar.setBackground(bg);
 
-        android.widget.EditText input = new android.widget.EditText(this);
+        android.widget.EditText input = new android.widget.EditText(this) {
+            @Override public boolean onKeyPreIme(int keyCode, KeyEvent event) {
+                if (keyCode == KeyEvent.KEYCODE_BACK && event.getAction() == KeyEvent.ACTION_UP) {
+                    closeActiveHudCard();
+                    return true;
+                }
+                return super.onKeyPreIme(keyCode, event);
+            }
+        };
         input.setHint("Digite para enviar ao jogo…");
         input.setHintTextColor(0xff94a3b8);
         input.setTextColor(Color.WHITE);
@@ -2812,8 +2905,8 @@ public final class MainActivity extends Activity {
 
     private void toggleCleanScreen(FrameLayout host) {
         cleanScreenMode = !cleanScreenMode;
+        if (cleanScreenMode) resetTouchPad();
         float target = cleanScreenMode ? 0f : 1f;
-        int vis = cleanScreenMode ? View.GONE : View.VISIBLE;
         if (controls != null) {
             if (!cleanScreenMode && touchControlsEnabled()) controls.setVisibility(View.VISIBLE);
             controls.animate().alpha(target).setDuration(200)
@@ -2835,62 +2928,69 @@ public final class MainActivity extends Activity {
             closeActiveHudCard();
             return;
         }
-        LinearLayout card = new LinearLayout(this);
-        card.setTag("framing");
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(16), dp(10), dp(16), dp(16));
+        ScrollView wrap = new ScrollView(this);
+        wrap.setTag("framing");
         GradientDrawable bg = rounded(0xeb14161a, 22);
         bg.setStroke(dp(1), 0x28ffffff);
-        card.setBackground(bg);
+        wrap.setBackground(bg);
 
-        View handle = new View(this);
-        handle.setBackground(rounded(0x44ffffff, 100));
-        LinearLayout.LayoutParams hLp = new LinearLayout.LayoutParams(dp(34), dp(4));
-        hLp.gravity = Gravity.CENTER_HORIZONTAL;
-        hLp.bottomMargin = dp(10);
-        card.addView(handle, hLp);
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(16), dp(10), dp(16), dp(16));
+        wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
 
-        TextView title = text("Tela e Enquadramento", 15, Color.WHITE);
-        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        card.addView(title);
+        final Runnable[] rebuild = new Runnable[1];
+        rebuild[0] = () -> {
+            card.removeAllViews();
+            View handle = new View(this);
+            handle.setBackground(rounded(0x44ffffff, 100));
+            LinearLayout.LayoutParams hLp = new LinearLayout.LayoutParams(dp(34), dp(4));
+            hLp.gravity = Gravity.CENTER_HORIZONTAL;
+            hLp.bottomMargin = dp(10);
+            card.addView(handle, hLp);
 
-        TextView sub = text("Modo de enquadramento", 12, 0xff9aa0a6);
-        sub.setPadding(0, dp(12), 0, dp(6));
-        card.addView(sub);
+            TextView title = text("Tela e Enquadramento", 15, Color.WHITE);
+            title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            card.addView(title);
 
-        PlayerFraming[] modes = PlayerFraming.values();
-        for (int i = 0; i < modes.length; i++) {
-            final PlayerFraming m = modes[i];
-            boolean selected = playerFraming == m;
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(12), dp(10), dp(12), dp(10));
-            if (selected) row.setBackground(rounded(0x26ffffff, 12));
-            TextView lbl = text(m.name(), 13, selected ? Color.WHITE : 0xffcfd4dc);
-            LinearLayout.LayoutParams lLp = new LinearLayout.LayoutParams(0, -2, 1f);
-            row.addView(lbl, lLp);
-            if (selected) {
-                TextView chk = text("✓", 14, 0xff22c55e);
-                chk.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-                row.addView(chk);
+            TextView sub = text("Modo de enquadramento", 12, 0xff9aa0a6);
+            sub.setPadding(0, dp(12), 0, dp(6));
+            card.addView(sub);
+
+            for (final PlayerFraming m : PlayerFraming.values()) {
+                boolean selected = playerFraming == m;
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(12), dp(10), dp(12), dp(10));
+                if (selected) row.setBackground(rounded(0x26ffffff, 12));
+                TextView lbl = text(m.label, 13, selected ? Color.WHITE : 0xffcfd4dc);
+                row.addView(lbl, new LinearLayout.LayoutParams(0, -2, 1f));
+                if (selected) {
+                    TextView chk = text("✓", 14, 0xff22c55e);
+                    chk.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    row.addView(chk);
+                }
+                row.setOnClickListener(v -> {
+                    playerFraming = m;
+                    if (!playerProfile.custom())
+                        getPreferences(MODE_PRIVATE).edit().putString("player_framing", m.name()).apply();
+                    updateFraming();
+                    rebuild[0].run();
+                });
+                card.addView(row);
             }
-            row.setOnClickListener(v -> {
-                playerFraming = m;
-                updateFraming();
-                toggleFramingCard(host);
-            });
-            card.addView(row);
-        }
 
-        View div = new View(this);
-        div.setBackgroundColor(0x22ffffff);
-        LinearLayout.LayoutParams dLp = new LinearLayout.LayoutParams(-1, dp(1));
-        dLp.setMargins(0, dp(10), 0, dp(10));
-        card.addView(div, dLp);
+            View div = new View(this);
+            div.setBackgroundColor(0x22ffffff);
+            LinearLayout.LayoutParams dLp = new LinearLayout.LayoutParams(-1, dp(1));
+            dLp.setMargins(0, dp(10), 0, dp(10));
+            card.addView(div, dLp);
 
-        card.addView(hudToggleRow("Tela limpa (ocultar HUD)", cleanScreenMode, () -> toggleCleanScreen(host)));
-        showHudCard(host, card, 270);
+            card.addView(hudToggleRow("Tela limpa (ocultar HUD)", cleanScreenMode, () -> toggleCleanScreen(host)));
+        };
+        rebuild[0].run();
+        showHudCard(host, wrap, 270);
     }
 
     private void toggleSettingsCard(FrameLayout host) {
@@ -2898,13 +2998,16 @@ public final class MainActivity extends Activity {
             closeActiveHudCard();
             return;
         }
-        LinearLayout card = new LinearLayout(this);
-        card.setTag("settings");
-        card.setOrientation(LinearLayout.HORIZONTAL);
-        card.setPadding(dp(12), dp(14), dp(14), dp(14));
+        ScrollView wrap = new ScrollView(this);
+        wrap.setTag("settings");
         GradientDrawable bg = rounded(0xeb14161a, 22);
         bg.setStroke(dp(1), 0x28ffffff);
-        card.setBackground(bg);
+        wrap.setBackground(bg);
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setPadding(dp(12), dp(14), dp(14), dp(14));
+        wrap.addView(card, new FrameLayout.LayoutParams(-1, -2));
 
         LinearLayout sidebar = new LinearLayout(this);
         sidebar.setOrientation(LinearLayout.VERTICAL);
@@ -2929,6 +3032,7 @@ public final class MainActivity extends Activity {
                 content.addView(h);
                 content.addView(hudToggleRow("Estatísticas (FPS, latência)", showMetrics, () -> {
                     showMetrics = !showMetrics;
+                    if (!showMetrics && hudPill != null) hudPill.setText("Cloud Gaming  •  ● Jogando");
                     updatePlayerOverlays();
                     refreshTab[0].run();
                 }));
@@ -2955,14 +3059,22 @@ public final class MainActivity extends Activity {
                 h.setPadding(0, 0, 0, dp(8));
                 content.addView(h);
                 content.addView(hudToggleRow("Controles virtuais", touchControlsEnabled(), () -> {
-                    touchControlsOverride = !touchControlsEnabled();
-                    updatePlayerOverlays();
-                    syncHudIndicators();
+                    if (gamepadConnected) {
+                        Toast.makeText(this, "Controle físico conectado: controles virtuais desativados.", Toast.LENGTH_SHORT).show();
+                    } else {
+                        touchControlsOverride = !touchControlsEnabled();
+                        updatePlayerOverlays();
+                        syncHudIndicators();
+                    }
                     refreshTab[0].run();
                 }));
                 content.addView(hudToggleRow("Toque tátil na tela", directTouchEnabled && !gamepadConnected, () -> {
-                    directTouchEnabled = !directTouchEnabled;
-                    syncHudIndicators();
+                    if (gamepadConnected) {
+                        Toast.makeText(this, "Toque tátil fica desativado com controle físico.", Toast.LENGTH_SHORT).show();
+                    } else {
+                        directTouchEnabled = !directTouchEnabled;
+                        syncHudIndicators();
+                    }
                     refreshTab[0].run();
                 }));
             },
@@ -2972,7 +3084,7 @@ public final class MainActivity extends Activity {
                 h.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
                 h.setPadding(0, 0, 0, dp(8));
                 content.addView(h);
-                TextView fBtn = text("Enquadramento: " + playerFraming.name(), 13, 0xffeef2f6);
+                TextView fBtn = text("Enquadramento: " + playerFraming.label, 13, 0xffeef2f6);
                 fBtn.setPadding(dp(10), dp(10), dp(10), dp(10));
                 fBtn.setBackground(rounded(0x22ffffff, 10));
                 fBtn.setOnClickListener(v -> toggleFramingCard(host));
@@ -3012,7 +3124,7 @@ public final class MainActivity extends Activity {
         vDiv.setBackgroundColor(0x22ffffff);
         card.addView(vDiv, new LinearLayout.LayoutParams(dp(1), -1));
         card.addView(content, new LinearLayout.LayoutParams(0, -2, 1f));
-        showHudCard(host, card, 380);
+        showHudCard(host, wrap, 380);
     }
 
     private View hudToggleRow(String label, boolean on, Runnable toggle) {
@@ -3324,7 +3436,8 @@ public final class MainActivity extends Activity {
 
     private void updatePlayerOverlays() {
         if (controls == null || player == null) return;
-        boolean showTouch = !launching && touchControlsEnabled();
+        boolean showTouch = !launching && !cleanScreenMode && touchControlsEnabled();
+        if (showTouch) controls.setAlpha(1f);
         controls.setVisibility(showTouch ? View.VISIBLE : View.GONE);
         if (!showTouch) resetTouchPad();
         updatePlayerShortcuts();
@@ -3447,7 +3560,7 @@ public final class MainActivity extends Activity {
             boolean preferPortuguese = getPreferences(MODE_PRIVATE).getBoolean("prefer_pt_br", false);
             StreamProfile profile = playerProfile;
             acquirePlaybackWifiLock();
-            nativeStart(selectedGame, target, preferPortuguese, profile.height, profile.fps, profile.bitrateMbps);
+            nativeStartByKey(selectedGameKey, target, preferPortuguese, profile.height, profile.fps, profile.bitrateMbps);
             PlaybackReport report = playbackReport;
             playbackTicker = worker.scheduleWithFixedDelay(new Runnable() {
                 long checkedAt;
@@ -3483,7 +3596,7 @@ public final class MainActivity extends Activity {
                     if (sampledAt == 0 || now - sampledAt >= 1000 || phase >= ENDED) {
                         report.sample(now, phase, bytes, received, decoded, status);
                         long elapsed = now - sampledAt;
-                        if (sampledAt != 0 && showMetrics) {
+                        if (sampledAt != 0) {
                             double mbps = (bytes - lastBytes) * 0.008 / elapsed;
                             long receivedFps = Math.round((received - lastReceived) * 1000.0 / elapsed);
                             long decodedFps = Math.round((decoded - lastDecoded) * 1000.0 / elapsed);
@@ -3493,15 +3606,17 @@ public final class MainActivity extends Activity {
                                 receivedFps, status[8], status[6], status[15],
                                 status[7], status[10], status[11], status[12], status[13], status[14]);
                             post(token, () -> {
-                                metricValues[0].setText(Long.toString(decodedFps));
-                                metricValues[1].setText(bitrate);
-                                metricValues[2].setText(status[9] + " ms");
+                                if (showMetrics) {
+                                    metricValues[0].setText(Long.toString(decodedFps));
+                                    metricValues[1].setText(bitrate);
+                                    metricValues[2].setText(status[9] + " ms");
+                                    metricDetails.setText(details);
+                                }
                                 if (hudPill != null) {
                                     hudPill.setText(showMetrics
                                         ? "Cloud Gaming  •  ● Jogando • " + decodedFps + " FPS • " + bitrate + " Mb/s • " + status[9] + " ms"
                                         : "Cloud Gaming  •  ● Jogando");
                                 }
-                                metricDetails.setText(details);
                             });
                         }
                         sampledAt = now;
@@ -3585,8 +3700,10 @@ public final class MainActivity extends Activity {
             } else {
                 openHome();
             }
+        } else if (favoritesScreen) {
+            showFavorites();
         } else if (games != null) {
-            showLibrary(games);
+            showLibrary(games, false);
             if (section == RECENT_GAMES) loadSection(RECENT_GAMES);
         } else {
             openHome();
@@ -4152,24 +4269,46 @@ public final class MainActivity extends Activity {
             if (launching) leavePlayer(false);
             else toggleSettingsCard(player);
         } else if (authenticating) cancelSignIn();
-        else if (libraryVisible && settingsScreen) openHome();
-        else if (libraryVisible && inlineSearch) {
+        else if (libraryVisible && settingsScreen) {
+            ++operation;
+            loadingGames = false;
+            openHome();
+        } else if (libraryVisible && inlineSearch) {
+            ++operation;
+            loadingGames = false;
             inlineSearch = false;
             loadSection(ALL_GAMES);
-        }
-        else if (libraryVisible && !search.isEmpty()) loadSection(ALL_GAMES);
-        else if (libraryVisible && (!home || !homeGenre.isEmpty())) openHome();
-        else super.onBackPressed();
+        } else if (libraryVisible && favoritesScreen) {
+            ++operation;
+            loadingGames = false;
+            favoritesScreen = false;
+            openHome();
+        } else if (libraryVisible && !search.isEmpty()) {
+            ++operation;
+            loadingGames = false;
+            loadSection(ALL_GAMES);
+        } else if (libraryVisible && (!home || !homeGenre.isEmpty())) {
+            ++operation;
+            loadingGames = false;
+            openHome();
+        } else super.onBackPressed();
     }
 
     @Override protected void onPause() {
-        if (player != null) resetPad();
+        ui.removeCallbacks(hidePlayerShortcuts);
+        if (player != null) {
+            resetPad();
+            updateRumble(0);
+            if (activePointerId != -1) {
+                activePointerId = -1;
+                pointerWorker.execute(() -> nativeSendPointerButton(false));
+            }
+            if (microphoneEnabled) {
+                microphoneEnabled = false;
+                worker.execute(() -> nativeSetMicrophone(false));
+            }
+        }
         super.onPause();
-        microphoneEnabled = false;
-        worker.execute(() -> {
-            nativeSetMicrophone(false);
-            microphoneEnabled = false;
-        });
     }
 
     @Override protected void onDestroy() {

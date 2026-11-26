@@ -341,7 +341,11 @@ void DecodeEmbeddedJson(json_t* root)
             if (!json_is_string(value))
                 continue;
             const char* text = json_string_value(value);
-            if (!text || (text[0] != '{' && text[0] != '['))
+            if (!text)
+                continue;
+            while (*text && std::isspace(static_cast<unsigned char>(*text)))
+                ++text;
+            if (*text != '{' && *text != '[')
                 continue;
             json_error_t error {};
             json_t* parsed = json_loads(text, 0, &error);
@@ -363,10 +367,14 @@ void ParseGameDetail(json_t* page, Game& game)
         {
             if (game.title.empty())
                 game.title = Str(data, "title");
-            game.description = Str(data, "description");
-            game.publisher = Str(data, "publishersText");
-            game.developer = Str(data, "developersText");
-            game.age_rating = Str(json_object_get(data, "ageRating"), "categoryText");
+            if (auto desc = Str(data, "description"); !desc.empty())
+                game.description = std::move(desc);
+            if (auto pub = Str(data, "publishersText"); !pub.empty())
+                game.publisher = std::move(pub);
+            if (auto dev = Str(data, "developersText"); !dev.empty())
+                game.developer = std::move(dev);
+            if (auto age = Str(json_object_get(data, "ageRating"), "categoryText"); !age.empty())
+                game.age_rating = std::move(age);
             if (game.offer_tag.empty())
                 game.offer_tag = Str(data, "upTopTag");
             if (game.offer_icon.empty())
@@ -1437,10 +1445,10 @@ std::vector<Game> LunaClient::SearchGames(const std::string& query) const
     return results;
 }
 
-Game LunaClient::FetchGameDetail(const Game& input) const
+Game LunaClient::FetchGameDetail(const Game& input, bool require_play_token) const
 {
     Game game = input;
-    if (!game.play_token.empty())
+    if (!game.play_token.empty() && !game.description.empty())
         return game;
     JsonPtr page(nullptr, &json_decref);
     // 1. Jeton d'action de la tuile (chemin du site), sinon adresse « game/<slug>/<ASIN> ».
@@ -1486,11 +1494,22 @@ Game LunaClient::FetchGameDetail(const Game& input) const
     // Certaines tuiles mènent directement au bouton « Jouer » plutôt qu'à la fiche.
     if (game.play_token.empty() && !game.play_service_token.empty())
     {
-        auto play_page = Adopt(GetPage(nullptr, game.play_service_token));
-        ParseGameDetail(play_page.get(), game);
+        try
+        {
+            auto play_page = Adopt(GetPage(nullptr, game.play_service_token));
+            ParseGameDetail(play_page.get(), game);
+        }
+        catch (const SignInRequired&)
+        {
+            throw;
+        }
+        catch (const LunaError& ex)
+        {
+            LogRuntimeEvent("luna", "detail_play_token_failed", ex.what());
+        }
     }
 
-    if (game.play_token.empty())
+    if (require_play_token && game.play_token.empty())
         throw LunaError(Tr("Ce jeu ne peut pas être lancé avec ce compte (non inclus dans l'abonnement ?)"));
     return game;
 }

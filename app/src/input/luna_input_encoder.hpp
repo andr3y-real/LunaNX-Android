@@ -74,7 +74,7 @@ class LunaInputEncoder
 
   private:
     std::uint32_t sequence_ = 0;
-    std::uint64_t pointer_seq_ = 1;
+    std::uint64_t pointer_seq_ = 0;
 };
 
 // Conversion d'un axe Borealis [-1, 1] vers l'échelle XInput.

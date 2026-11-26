@@ -17,8 +17,13 @@ std::uint32_t AndroidRumbleState()
 
 void SwitchRumble::Send(std::uint8_t heavy, std::uint8_t light)
 {
-    const auto sequence = (vibration.load(std::memory_order_relaxed) >> 16) + 1;
-    vibration.store((sequence << 16) | (static_cast<std::uint32_t>(heavy) << 8) | light,
-                    std::memory_order_relaxed);
+    std::uint32_t expected = vibration.load(std::memory_order_relaxed);
+    for (;;)
+    {
+        const auto sequence = (expected >> 16) + 1;
+        const std::uint32_t next = (sequence << 16) | (static_cast<std::uint32_t>(heavy) << 8) | light;
+        if (vibration.compare_exchange_weak(expected, next, std::memory_order_relaxed))
+            break;
+    }
 }
 }

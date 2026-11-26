@@ -73,7 +73,7 @@ class LunaClient
     // Vide si Luna ne trouve rien ; lève LunaError si la première page est refusée.
     std::vector<Game> SearchGames(const std::string& query) const;
     // Complète un jeu avec sa fiche (description, playToken).
-    Game FetchGameDetail(const Game& game) const;
+    Game FetchGameDetail(const Game& game, bool require_play_token = true) const;
 
     std::vector<Region> MeasureRegions() const;
     bool IsPinChallengeRequired() const;
