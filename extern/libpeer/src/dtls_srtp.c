@@ -12,6 +12,7 @@
 #include "mbedtls/sha256.h"
 #include "mbedtls/ssl.h"
 #include "ports.h"
+#include "rtp.h"
 #include "socket.h"
 #include "utils.h"
 
@@ -301,6 +302,9 @@ static int dtls_srtp_key_derivation(DtlsSrtp* dtls_srtp, const unsigned char* ma
 
   dtls_srtp->remote_policy.ssrc.type = ssrc_any_inbound;
   dtls_srtp->remote_policy.key = dtls_srtp->remote_policy_key;
+  // Accept authenticated reordering across the entire receive buffer while
+  // continuing to reject duplicate packets.
+  dtls_srtp->remote_policy.window_size = RTP_REORDER_WINDOW;
   dtls_srtp->remote_policy.next = NULL;
 
   if (srtp_create(&dtls_srtp->srtp_in, &dtls_srtp->remote_policy) != srtp_err_status_ok) {

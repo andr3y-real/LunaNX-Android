@@ -865,7 +865,27 @@ extern "C" JNIEXPORT jobjectArray JNICALL JNI_METHOD(nativeStatus)(JNIEnv* env, 
         std::to_string(video.rtp_gaps_expired),
         queue.queued ? "1" : "0",
         std::to_string(queue.position),
-        std::to_string(queue.wait_seconds)
+        std::to_string(queue.wait_seconds),
+        std::to_string(video.rendered_width),
+        std::to_string(video.rendered_height),
+        std::to_string(video.rtt_current_ms),
+        std::to_string(video.rtt_min_ms),
+        std::to_string(video.rtt_p95_ms),
+        std::to_string(video.rtt_jitter_ms),
+        std::to_string(video.rtp_packets_received),
+        std::to_string(video.rtp_sequence_gaps),
+        std::to_string(video.rtp_reordered_packets),
+        std::to_string(video.rtp_late_packets_dropped),
+        std::to_string(video.rtp_forced_skips),
+        std::to_string(video.rtp_burst_fast_forwards),
+        std::to_string(video.nack_requests),
+        std::to_string(video.nack_packets_requested),
+        std::to_string(video.rtx_packets_received),
+        std::to_string(video.rtx_packets_recovered),
+        std::to_string(video.codec_submit_retries),
+        std::to_string(video.codec_stale_drops),
+        std::to_string(video.keyframe_requests),
+        std::to_string(video.peak_queue_ms)
     });
 }
 

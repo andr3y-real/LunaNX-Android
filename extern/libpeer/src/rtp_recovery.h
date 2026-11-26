@@ -6,19 +6,18 @@
 #define RTP_RECOVERY_DEFAULT_GAP_HOLD_MS 105u
 #define RTP_RECOVERY_MIN_GAP_HOLD_MS 90u
 #define RTP_RECOVERY_MAX_GAP_HOLD_MS 140u
-#define RTP_RECOVERY_MIN_NACK_RETRY_MS 10u
-#define RTP_RECOVERY_MAX_NACK_RETRY_MS 25u
-#define RTP_RECOVERY_MAX_NACK_RETRIES 5u
-#define RTP_RECOVERY_MAX_BURST_NACK_RETRIES 6u
+#define RTP_RECOVERY_NACK_REORDER_MS 5u
+#define RTP_RECOVERY_NACK_CHECK_MS 5u
+#define RTP_RECOVERY_NACK_LOOKAHEAD 68u
 #define RTP_RECOVERY_BURST_GAP_DISTANCE 64u
 #define RTP_RECOVERY_BURST_MIN_HOLD_MS 110u
 #define RTP_RECOVERY_BURST_HOLD_BONUS_MS 16u
 #define RTP_RECOVERY_STARTUP_ACCESS_UNITS 180u
 #define RTP_RECOVERY_STARTUP_HOLD_BONUS_MS 8u
-#define RTP_RECOVERY_STARTUP_REBASE_DISTANCE 128u
+#define RTP_RECOVERY_STARTUP_REBASE_DISTANCE 384u
 #define RTP_RECOVERY_STARTUP_EARLY_REBASE_ACCESS_UNITS 30u
-#define RTP_RECOVERY_STARTUP_EARLY_REBASE_DISTANCE 256u
-#define RTP_RECOVERY_STARTUP_LATE_REBASE_DISTANCE 384u
+#define RTP_RECOVERY_STARTUP_EARLY_REBASE_DISTANCE 420u
+#define RTP_RECOVERY_STARTUP_LATE_REBASE_DISTANCE 448u
 #define RTP_RECOVERY_STARTUP_REBASE_LIMIT 2u
 
 static inline uint32_t rtp_recovery_clamp_u32(uint32_t value,
@@ -55,14 +54,8 @@ static inline uint32_t rtp_recovery_burst_gap_hold_ms(
   return burst_hold_ms > regular_hold_ms ? burst_hold_ms : regular_hold_ms;
 }
 
-static inline uint32_t rtp_recovery_nack_retry_ms(uint32_t rtt_ms) {
-  if (rtt_ms == 0)
-    return 16u;
-
-  return rtp_recovery_clamp_u32(
-      rtt_ms / 3u,
-      RTP_RECOVERY_MIN_NACK_RETRY_MS,
-      RTP_RECOVERY_MAX_NACK_RETRY_MS);
+static inline uint32_t rtp_recovery_nack_response_ms(uint32_t rtt_ms) {
+  return rtt_ms == 0 ? 60u : rtp_recovery_clamp_u32(rtt_ms, 12u, 1000u);
 }
 
 static inline int rtp_recovery_startup_active(
@@ -78,11 +71,6 @@ static inline uint32_t rtp_recovery_startup_gap_hold_ms(
   return rtp_recovery_clamp_u32(
       regular_hold_ms + RTP_RECOVERY_STARTUP_HOLD_BONUS_MS,
       RTP_RECOVERY_MIN_GAP_HOLD_MS, RTP_RECOVERY_MAX_GAP_HOLD_MS);
-}
-
-static inline uint16_t rtp_recovery_nack_evidence_packets(
-    uint32_t completed_access_units) {
-  return rtp_recovery_startup_active(completed_access_units) ? 2u : 3u;
 }
 
 static inline int rtp_recovery_should_wait_for_gap(uint16_t distance,

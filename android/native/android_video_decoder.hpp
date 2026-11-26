@@ -2,11 +2,13 @@
 
 #include <android/native_window.h>
 #include <media/NdkMediaCodec.h>
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <utility>
 #include "codec_queue.hpp"
 #include "video_presentation_clock.hpp"
 
@@ -20,6 +22,13 @@ public:
         bool error;
     };
 
+    enum class SubmitStatus
+    {
+        Submitted,
+        Retry,
+        Error,
+    };
+
     AndroidVideoDecoder(ANativeWindow* window, int width, int height, int fps,
                         std::function<void()> wake = {});
     ~AndroidVideoDecoder();
@@ -28,7 +37,14 @@ public:
     Signals signals();
     size_t codec_pending() const { return codec_queue_.count(); }
     uint64_t peak_codec_delay_us() const { return codec_queue_.peak_delay_us(); }
-    bool submit_decode_unit(const uint8_t* data, int size, uint32_t timestamp, uint64_t generation);
+    uint64_t submit_retries() const { return submit_retries_.load(std::memory_order_relaxed); }
+    uint64_t stale_frames_dropped() const { return stale_frames_dropped_.load(std::memory_order_relaxed); }
+    std::pair<int, int> video_size() const
+    {
+        return {decoded_width_.load(std::memory_order_relaxed),
+                decoded_height_.load(std::memory_order_relaxed)};
+    }
+    SubmitStatus submit_decode_unit(const uint8_t* data, int size, uint32_t timestamp, uint64_t generation);
     struct OutputProgress
     {
         int decoded = 0;
@@ -45,6 +61,7 @@ private:
     {
         int32_t index;
         AMediaCodecBufferInfo info;
+        uint64_t available_us;
     };
 
     static void on_input(AMediaCodec*, void*, int32_t);
@@ -53,6 +70,8 @@ private:
     static void on_error(AMediaCodec*, void*, media_status_t, int32_t, const char*);
 
     bool open();
+    bool configure_codec(bool low_latency);
+    void apply_window_frame_rate();
     void close_locked();
 
     std::mutex mutex_;
@@ -69,6 +88,10 @@ private:
     uint32_t last_timestamp_ = 0;
     int64_t presentation_ticks_ = 0;
     bool have_timestamp_ = false;
+    std::atomic<int> decoded_width_;
+    std::atomic<int> decoded_height_;
+    std::atomic<uint64_t> submit_retries_ {0};
+    std::atomic<uint64_t> stale_frames_dropped_ {0};
 
     std::mutex callback_mutex_;
     AMediaCodec* callback_codec_ = nullptr;

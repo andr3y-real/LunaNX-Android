@@ -69,12 +69,8 @@ struct PeerConnection {
   uint32_t remote_vrtx_ssrc;
   int video_payload_type;
   int video_rtx_payload_type;
-  uint16_t video_last_nack_sequence;
-  uint16_t video_last_nack_bitmask;
-  int video_has_last_nack_sequence;
-  uint8_t video_nack_retry_count;
-  uint8_t video_nack_burst;
-  uint32_t video_last_nack_sent_ms;
+  uint32_t video_last_nack_check_ms;
+  int video_nack_checked;
   uint32_t video_nack_requests;
   uint32_t video_nack_packets_requested;
   uint32_t video_nack_retries;
@@ -254,7 +250,7 @@ static void rtp_receive_stats_on_sender_report(RtpReceiveStats* stats, uint32_t 
   if (!stats->initialized || stats->ssrc != ssrc)
     return;
   stats->last_sr_ntp_mid = (ntp_seconds << 16) | (ntp_fraction >> 16);
-  stats->last_sr_received_ms = ports_get_epoch_time();
+  stats->last_sr_received_ms = ports_get_monotonic_time_ms();
 }
 
 // Writes a 24-byte report block and returns the fraction lost since the previous report (Q8).
@@ -271,8 +267,11 @@ static uint8_t rtp_receive_stats_write_block(RtpReceiveStats* stats, uint8_t* ou
   stats->expected_prior = expected;
   stats->received_prior = stats->received;
   uint8_t fraction = 0;
-  if (expected_interval > 0 && expected_interval > received_interval)
-    fraction = (uint8_t)(((expected_interval - received_interval) << 8) / expected_interval);
+  if (expected_interval > received_interval) {
+    const uint64_t lost_interval = expected_interval - received_interval;
+    const uint32_t fraction_q8 = (uint32_t)((lost_interval << 8) / expected_interval);
+    fraction = fraction_q8 <= 255u ? (uint8_t)fraction_q8 : 255u;
+  }
 
   uint32_t dlsr = 0;
   if (stats->last_sr_received_ms != 0)
@@ -290,7 +289,7 @@ static uint8_t rtp_receive_stats_write_block(RtpReceiveStats* stats, uint8_t* ou
 }
 
 static void peer_connection_maybe_send_receiver_report(PeerConnection* pc) {
-  const uint32_t now_ms = ports_get_epoch_time();
+  const uint32_t now_ms = ports_get_monotonic_time_ms();
   if (pc->last_receiver_report_ms != 0 && now_ms - pc->last_receiver_report_ms < 500)
     return;
   pc->last_receiver_report_ms = now_ms;
@@ -795,11 +794,12 @@ static int peer_connection_loop_internal(PeerConnection* pc,
                                       (uint8_t)pc->video_payload_type,
                                       pc->remote_vssrc) == 0) {
               pc->agent_ret = (int)recovered_size;
-              pc->video_rtx_packets_recovered++;
-              rtp_receive_stats_update(&pc->video_rx_stats, pc->remote_vssrc,
-                                       ntohs(((RtpPacket*)pc->agent_buf)->header.seq_number));
-              rtp_decoder_decode(&pc->vrtp_decoder, pc->agent_buf,
-                                 pc->agent_ret);
+              if (rtp_decoder_decode_retransmission(&pc->vrtp_decoder, pc->agent_buf,
+                                                    pc->agent_ret)) {
+                pc->video_rtx_packets_recovered++;
+                rtp_receive_stats_update(&pc->video_rx_stats, pc->remote_vssrc,
+                                         ntohs(rtp->header.seq_number));
+              }
             } else {
               pc->video_rtx_packets_invalid++;
             }
@@ -1124,75 +1124,29 @@ static uint32_t peer_connection_nack_packet_count(uint16_t bitmask) {
   return count;
 }
 
-static void peer_connection_reset_video_nack(PeerConnection* pc) {
-  pc->video_has_last_nack_sequence = 0;
-  pc->video_last_nack_bitmask = 0;
-  pc->video_nack_retry_count = 0;
-  pc->video_nack_burst = 0;
-  pc->video_last_nack_sent_ms = 0;
-}
-
 static void peer_connection_maybe_send_video_nack(PeerConnection* pc) {
+  if (pc->remote_vssrc == 0 || pc->vrtp_decoder.reorder_buffered_packets == 0)
+    return;
+
+  const uint32_t now_ms = ports_get_monotonic_time_ms();
+  if (pc->video_nack_checked &&
+      now_ms - pc->video_last_nack_check_ms < RTP_RECOVERY_NACK_CHECK_MS)
+    return;
+  pc->video_nack_checked = 1;
+  pc->video_last_nack_check_ms = now_ms;
+
   uint16_t packet_id = 0;
   uint16_t bitmask = 0;
-  if (!pc || pc->remote_vssrc == 0 ||
-      !rtp_decoder_get_nack(&pc->vrtp_decoder, &packet_id, &bitmask)) {
-    if (pc)
-      peer_connection_reset_video_nack(pc);
-    return;
-  }
-
-  const uint32_t now_ms = ports_get_epoch_time();
-  const uint32_t retry_interval_ms =
-      rtp_recovery_nack_retry_ms(pc->agent.rtt_current_ms);
-  const int new_base = !pc->video_has_last_nack_sequence ||
-                       pc->video_last_nack_sequence != packet_id;
-  const int expanded_mask =
-      !new_base && pc->video_last_nack_bitmask != bitmask;
-
-  if (new_base) {
-    pc->video_last_nack_sequence = packet_id;
-    pc->video_last_nack_bitmask = bitmask;
-    pc->video_nack_retry_count = 0;
-  } else if (expanded_mask) {
-    pc->video_last_nack_bitmask = bitmask;
-  }
-  if (pc->vrtp_decoder.reorder_buffered_packets >=
-      RTP_RECOVERY_BURST_GAP_DISTANCE) {
-    pc->video_nack_burst = 1;
-  }
-
-  const uint32_t elapsed_ms =
-      pc->video_last_nack_sent_ms == 0
-          ? retry_interval_ms
-          : now_ms - pc->video_last_nack_sent_ms;
-  const int first_request = new_base || !pc->video_has_last_nack_sequence;
-  const int mask_update_ready =
-      expanded_mask && elapsed_ms >= RTP_RECOVERY_MIN_NACK_RETRY_MS;
-  const int retry_ready =
-      !first_request && !mask_update_ready &&
-      pc->video_nack_retry_count <
-          (pc->video_nack_burst
-               ? RTP_RECOVERY_MAX_BURST_NACK_RETRIES
-               : RTP_RECOVERY_MAX_NACK_RETRIES) &&
-      elapsed_ms >= retry_interval_ms;
-  if (!first_request && !mask_update_ready && !retry_ready)
+  if (!rtp_decoder_get_nack(&pc->vrtp_decoder, now_ms, pc->agent.rtt_current_ms,
+                           &packet_id, &bitmask))
     return;
 
-  const int sent = peer_connection_send_rtcp_nack(
-      pc, pc->remote_vssrc, packet_id, pc->video_last_nack_bitmask);
-  if (sent < 0)
+  if (peer_connection_send_rtcp_nack(pc, pc->remote_vssrc, packet_id, bitmask) < 0)
     return;
 
-  if (!first_request) {
-    pc->video_nack_retry_count++;
-    pc->video_nack_retries++;
-  }
-  pc->video_has_last_nack_sequence = 1;
-  pc->video_last_nack_sent_ms = now_ms;
+  pc->video_nack_retries += rtp_decoder_note_nack(&pc->vrtp_decoder, now_ms, packet_id, bitmask);
   pc->video_nack_requests++;
-  pc->video_nack_packets_requested +=
-      peer_connection_nack_packet_count(pc->video_last_nack_bitmask);
+  pc->video_nack_packets_requested += peer_connection_nack_packet_count(bitmask);
 }
 
 void peer_connection_set_max_receive_bitrate(PeerConnection* pc, uint32_t bps) {

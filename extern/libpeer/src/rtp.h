@@ -5,8 +5,12 @@
 #include <stddef.h>
 
 #ifdef __BYTE_ORDER
+#ifndef __BIG_ENDIAN
 #define __BIG_ENDIAN 4321
+#endif
+#ifndef __LITTLE_ENDIAN
 #define __LITTLE_ENDIAN 1234
+#endif
 #elif defined(__SWITCH__)
 #define __BIG_ENDIAN 4321
 #define __LITTLE_ENDIAN 1234
@@ -81,11 +85,11 @@ typedef void (*RtpOnPacket)(uint8_t* packet, size_t bytes, void* user_data);
 typedef void (*RtpOnAudioPacket)(const PeerAudioPacket* packet, void* user_data);
 typedef void (*RtpOnVideoPacket)(const PeerVideoPacket* packet, void* user_data);
 
-// Dynamic 720p frames regularly span more than eight RTP packets. A tiny
-// window turns normal UDP burst reordering into artificial packet loss.
-#define RTP_REORDER_WINDOW 128
-#define RTP_REORDER_MAX_HOLD_PACKETS 64
-#define RTP_REORDER_BURST_MAX_HOLD_PACKETS 112
+// Dynamic 720p/1080p keyframes regularly span more than 100 RTP packets. A larger
+// window prevents normal UDP bursts from triggering artificial packet skips.
+#define RTP_REORDER_WINDOW 512
+#define RTP_REORDER_MAX_HOLD_PACKETS 192
+#define RTP_REORDER_BURST_MAX_HOLD_PACKETS 384
 #define RTP_REORDER_PACKET_CAPACITY (CONFIG_MTU + 256)
 
 struct RtpDecoder {
@@ -129,6 +133,10 @@ struct RtpDecoder {
   size_t reorder_sizes[RTP_REORDER_WINDOW];
   uint16_t reorder_sequences[RTP_REORDER_WINDOW];
   uint8_t reorder_used[RTP_REORDER_WINDOW];
+  uint32_t reorder_arrival_ms[RTP_REORDER_WINDOW];
+  uint32_t nack_sent_ms[RTP_REORDER_WINDOW];
+  uint16_t nack_sent_sequence[RTP_REORDER_WINDOW];
+  uint8_t nack_sent[RTP_REORDER_WINDOW];
   uint16_t reorder_expected_sequence;
   uint8_t reorder_has_expected_sequence;
   uint32_t reorder_buffered_packets;
@@ -183,8 +191,11 @@ void rtp_decoder_set_reorder_grace_ms(RtpDecoder* rtp_decoder, uint32_t hold_ms)
 void rtp_decoder_set_reorder_burst_grace_ms(RtpDecoder* rtp_decoder,
                                             uint32_t hold_ms);
 
-int rtp_decoder_get_nack(const RtpDecoder* rtp_decoder, uint16_t* packet_id,
-                         uint16_t* bitmask);
+int rtp_decoder_decode_retransmission(RtpDecoder* decoder, const uint8_t* data, size_t size);
+int rtp_decoder_get_nack(const RtpDecoder* decoder, uint32_t now_ms,
+                        uint32_t rtt_ms, uint16_t* packet_id, uint16_t* bitmask);
+uint32_t rtp_decoder_note_nack(RtpDecoder* decoder, uint32_t now_ms,
+                               uint16_t packet_id, uint16_t bitmask);
 
 uint32_t rtp_get_ssrc(uint8_t* packet);
 

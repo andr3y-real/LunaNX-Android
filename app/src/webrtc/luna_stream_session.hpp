@@ -101,6 +101,26 @@ class LunaStreamSession
         uint64_t waiting_for_keyframe_drops = 0;
         uint64_t rtp_gaps_recovered = 0;
         uint64_t rtp_gaps_expired = 0;
+        int rendered_width = 0;
+        int rendered_height = 0;
+        int rtt_current_ms = -1;
+        int rtt_min_ms = -1;
+        int rtt_p95_ms = -1;
+        int rtt_jitter_ms = -1;
+        uint64_t rtp_packets_received = 0;
+        uint64_t rtp_sequence_gaps = 0;
+        uint64_t rtp_reordered_packets = 0;
+        uint64_t rtp_late_packets_dropped = 0;
+        uint64_t rtp_forced_skips = 0;
+        uint64_t rtp_burst_fast_forwards = 0;
+        uint64_t nack_requests = 0;
+        uint64_t nack_packets_requested = 0;
+        uint64_t rtx_packets_received = 0;
+        uint64_t rtx_packets_recovered = 0;
+        uint64_t codec_submit_retries = 0;
+        uint64_t codec_stale_drops = 0;
+        uint64_t keyframe_requests = 0;
+        uint64_t peak_queue_ms = 0;
     };
     AndroidVideoStats android_video_stats();
     bool set_android_surface(ANativeWindow* window);
@@ -154,9 +174,12 @@ class LunaStreamSession
     void enqueue_decode_unit(const uint8_t* data, size_t size, uint32_t rtp_timestamp);
     void recycle_decode_buffer_locked(std::vector<uint8_t>&& buffer);
     void clear_decoder_queue_locked();
+#ifdef __ANDROID__
+    uint64_t observe_decoder_queue_age_locked();
+#endif
     void request_keyframe(const char* reason);
     void maybe_recover_decode_stall();
-    void maybe_recover_rtp_damage();
+    void maybe_recover_rtp_damage(bool incoming_idr = false);
     bool sleep_unless_stopped(std::chrono::milliseconds duration);
 
     std::shared_ptr<const luna::LunaClient> client_;
@@ -210,6 +233,7 @@ class LunaStreamSession
     std::atomic<uint64_t> decoder_resets_ {0};
     std::atomic<uint64_t> codec_resets_ {0};
     std::atomic<uint64_t> queue_recoveries_ {0};
+    uint64_t peak_decoder_queue_age_ms_ = 0; // Guarded by decoder_queue_mutex_.
     uint64_t waiting_for_keyframe_drops_ = 0; // Guarded by decoder_queue_mutex_.
     std::atomic<bool> video_surface_attached_ {true};
     std::atomic<uint64_t> video_surface_generation_ {0};
@@ -232,7 +256,6 @@ class LunaStreamSession
     std::atomic<int> decode_errors_ {0};
     std::atomic<int> decoder_queue_drops_ {0};
     std::atomic<uint64_t> last_decoded_frame_at_us_ {0};
-    std::atomic<uint32_t> last_rtp_damage_gate_ {0};
     uint32_t last_rtp_access_units_dropped_ = 0;
     int keyframe_request_attempts_ = 0;
     std::chrono::steady_clock::time_point last_keyframe_request_at_ {};

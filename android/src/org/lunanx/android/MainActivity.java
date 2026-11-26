@@ -110,6 +110,12 @@ public final class MainActivity extends Activity {
     private static final int ENDED = 4;
 
     private static final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
+    private static final ScheduledExecutorService playerWorker = Executors.newSingleThreadScheduledExecutor(task -> {
+        Thread thread = new Thread(task, "LunaNX-Player");
+        thread.setDaemon(true);
+        thread.setPriority(Math.min(Thread.MAX_PRIORITY, Thread.NORM_PRIORITY + 3));
+        return thread;
+    });
     private static final ExecutorService catalogWorker = Executors.newSingleThreadExecutor();
     private static final ExecutorService artwork = Executors.newFixedThreadPool(2);
     private static final LruCache<String, Bitmap> covers = new LruCache<String, Bitmap>(12 * 1024 * 1024) {
@@ -2476,13 +2482,13 @@ public final class MainActivity extends Activity {
                 if (isCancelled(token)) return;
                 Surface target = holder.getSurface();
                 long revision = ++surfaceRevision;
-                worker.execute(() -> attachPlaybackSurface(token, revision, target, 0));
+                playerWorker.execute(() -> attachPlaybackSurface(token, revision, target, 0));
             }
             @Override public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {}
             @Override public void surfaceDestroyed(SurfaceHolder holder) {
                 if (isCancelled(token)) return;
                 ++surfaceRevision;
-                worker.execute(() -> {
+                playerWorker.execute(() -> {
                     if (!isCancelled(token) && playbackTicker != null && !playbackTicker.isDone())
                         nativeSetVideoSurface(null);
                 });
@@ -2527,7 +2533,7 @@ public final class MainActivity extends Activity {
         controls = touchOverlay();
         current.addView(controls, new FrameLayout.LayoutParams(-1, -1));
 
-        FrameLayout backBtn = playerCircleVectorIcon("back", false, "Sair do jogo", () -> leavePlayer(false));
+        FrameLayout backBtn = playerCircleVectorIcon("back", false, "Sair do jogo", this::leavePlayer);
         playerMenuButton = backBtn;
         current.addView(backBtn, floating(dp(42), dp(42), Gravity.TOP | Gravity.START, 14));
 
@@ -3048,7 +3054,7 @@ public final class MainActivity extends Activity {
                 exLp.topMargin = dp(12);
                 exitBtn.setOnClickListener(v -> {
                     closeActiveHudCard();
-                    leavePlayer(false);
+                    leavePlayer();
                 });
                 content.addView(exitBtn, exLp);
             },
@@ -3513,7 +3519,7 @@ public final class MainActivity extends Activity {
                 if (revision == surfaceRevision) videoSurfaceError = null;
             });
         } else if (attempt < 2) {
-            worker.schedule(() -> attachPlaybackSurface(token, revision, target, attempt + 1),
+            playerWorker.schedule(() -> attachPlaybackSurface(token, revision, target, attempt + 1),
                 250, TimeUnit.MILLISECONDS);
         } else {
             post(token, () -> {
@@ -3562,7 +3568,7 @@ public final class MainActivity extends Activity {
             acquirePlaybackWifiLock();
             nativeStartByKey(selectedGameKey, target, preferPortuguese, profile.height, profile.fps, profile.bitrateMbps);
             PlaybackReport report = playbackReport;
-            playbackTicker = worker.scheduleWithFixedDelay(new Runnable() {
+            playbackTicker = playerWorker.scheduleWithFixedDelay(new Runnable() {
                 long checkedAt;
                 long sampledAt;
                 long lastBytes;
@@ -3669,10 +3675,6 @@ public final class MainActivity extends Activity {
         closeActiveHudCard();
         PlaybackReport report = showReport ? playbackReport : null;
         ++operation;
-        if (playbackTicker != null) {
-            playbackTicker.cancel(false);
-            playbackTicker = null;
-        }
         player = null;
         activeHudCard = null;
         hudPillWrap = null;
@@ -3715,7 +3717,7 @@ public final class MainActivity extends Activity {
         microphoneEnabled = false;
         String game = playerTitle;
         String profileName = playerProfile == null ? "" : playerProfile.name;
-        worker.execute(() -> {
+        playerWorker.execute(() -> {
             if (playbackTicker != null) playbackTicker.cancel(false);
             playbackTicker = null;
             long now = SystemClock.elapsedRealtime();
@@ -3773,7 +3775,7 @@ public final class MainActivity extends Activity {
         session.setPadding(0, dp(4), 0, dp(12));
         panel.addView(session);
 
-        String[] labels = {"FPS decodificado", "Bitrate recebido", "Programados para a tela", "Janelas sem decodificação"};
+        String[] labels = {"FPS decodificado", "Bitrate recebido", "Entregues à tela", "Janelas 0 / baixas"};
         for (int i = 0; i < labels.length; i += 2) {
             LinearLayout row = new LinearLayout(this);
             row.setBackground(chrome(0xff302040, 12));

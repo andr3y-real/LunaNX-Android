@@ -28,25 +28,46 @@ public final class PlaybackReportTest {
         String summary = report.format(2300);
         require(summary, "Perfil solicitado: Teste A · 720p · 30 FPS · até 5 Mb/s");
         require(summary, "60.0 / 30.0");
-        require(summary, "8.0 Mb/s");
-        require(summary, "Quadros programados para a tela: 56");
-        require(summary, "cadência na saída: 4");
-        require(summary, "Janelas de ~1 s sem decodificação: 1");
-        require(summary, "Resets do decoder: 1");
-        require(summary, "RTP +2");
-        require(summary, "sem imagem: 5");
-        require(summary, "aguardando imagem-chave: 3");
-        require(summary, "aguardando chave +3");
-        require(summary, "Lacunas RTP recuperadas / expiradas: 4 / 1");
-        require(summary, "entrada até saída do codec: 90 ms");
+        require(summary, "8.00 Mb/s");
+        require(summary, "Última fase: 3 (Jogando)");
+        require(summary, "Quadros recebidos / decodificados / enviados à tela: 120 / 60 / 56");
+        require(summary, "backlog (stale) / cadência: 0 / 4");
+        require(summary, "Janelas de 1s zeradas / abaixo do alvo: 1 / 1");
+        require(summary, "Resets do decoder (erros de codec) / fila cheia: 1 (0) / 0");
+        require(summary, "auDrop+2");
+        require(summary, "waitKey+3");
+        require(summary, "Unidades AU danificadas / sem imagem: 2 / 5");
+        require(summary, "Lacunas recuperadas / expiradas / fast-forward / skips: 4 / 1 / 0 / 0");
+        require(summary, "Picos de espera na fila / tempo até a saída do codec: 3 ms / 90 ms");
         if (summary.contains("texto privado")) throw new AssertionError("Status text leaked");
-        for (int i = 0; i < 16; ++i) {
+        for (int i = 0; i < 24; ++i) {
             status[7] = String.valueOf(i + 2);
             report.sample(3300 + i * 1000L, 3, 2_000_000, 120, 60, status);
         }
-        String wrapped = report.format(20000);
-        if (wrapped.contains("RTP +2")) throw new AssertionError("Event ring did not wrap");
-        if (wrapped.split(" · resets ", -1).length != 13) throw new AssertionError("Unexpected event count");
+        String wrapped = report.format(28000);
+        if (wrapped.contains("auDrop+2")) throw new AssertionError("Event ring did not wrap");
+        if (wrapped.split(" · reset\\+", -1).length != 21) throw new AssertionError("Unexpected event count");
+
+        PlaybackReport live = new PlaybackReport(100, "60 FPS");
+        String[] extended = java.util.Arrays.copyOf(status, 41);
+        extended[6] = "0";
+        extended[7] = "0";
+        extended[15] = "0";
+        extended[23] = "92";
+        extended[24] = "90";
+        extended[40] = "117";
+        live.sample(100, 3, 0, 0, 0, extended);
+        live.sample(1100, 3, 500_000, 60, 60, extended);
+        if (live.format(1100).contains("Ocorrências"))
+            throw new AssertionError("Steady RTT created an incident");
+        extended[3] = "96";
+        extended[23] = "123";
+        extended[38] = "3";
+        live.sample(2100, 3, 900_000, 110, 100, extended);
+        String incident = live.format(2100);
+        require(incident, "FPS 50/40");
+        require(incident, "backlog (stale) / cadência: 3 / 1");
+        require(incident, "117 ms / 90 ms");
     }
 
     private static void require(String value, String expected) {
