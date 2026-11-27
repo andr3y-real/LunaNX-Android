@@ -1,5 +1,21 @@
 # Changelog
 
+## LunaNX Android 3.1-android.23
+
+- Recover more missing video packets during brief latency spikes. Retransmission requests
+  use the median of recent RTT probes, and the player adjusts its wait using the response
+  times it measures. A larger RTP reorder window helps keep useful packets during bursts.
+- Keep video pacing steadier when several decoded frames arrive together. At 60 FPS,
+  the player can briefly hold the newest frame for an available display slot, with a
+  wait budget of about 4 ms.
+- Give the stream a chance to recover before restarting MediaCodec. The player asks for
+  a keyframe first and can reuse a keyframe already in the decode queue if a restart is needed.
+- The playback report now shows the RTT used for retransmission requests, the latest
+  measured response estimate, and how many frames were presented after waiting for a display slot.
+
+In a 90-second simulated RTP replay with intermittent latency spikes and periods of
+sustained high latency, expired packet gaps fell from 29 to 15.
+
 ## v3.1 — 2026-11-17
 
 - Bug fix update: searching for a game that did not exist made LunaNX crash and close.
