@@ -51,6 +51,8 @@ final class PlaybackReport {
     private long rtpForcedSkips;
     private long rtpBurstFastForwards;
     private long nackRequests;
+    private long nackRttMs;
+    private long rtxResponseMs;
     private long nackPacketsRequested;
     private long rtxPacketsReceived;
     private long rtxPacketsRecovered;
@@ -101,6 +103,9 @@ final class PlaybackReport {
         slowCodecOutputs = parseLongSafe(status, 42, slowCodecOutputs);
         peakPlayoutReserveMs = parseLongSafe(status, 43, peakPlayoutReserveMs);
         deferredFramesPresented = parseLongSafe(status, 44, deferredFramesPresented);
+        nackRttMs = parseLongSafe(status, 45, nackRttMs);
+        long rtxSampleMs = parseLongSafe(status, 46, 0);
+        if (rtxSampleMs > 0) rtxResponseMs = rtxSampleMs;
         long newWaitingDrops = parseLongSafe(status, 15, waitingForKeyframeDrops);
 
         if (status.length >= 23) {
@@ -289,6 +294,10 @@ final class PlaybackReport {
         out.append("NACK enviados / pacotes pedidos / RTX recebidos / aproveitados: ")
             .append(nackRequests).append(" / ").append(nackPacketsRequested)
             .append(" / ").append(rtxPacketsReceived).append(" / ").append(rtxPacketsRecovered).append('\n');
+        if (nackRttMs > 0)
+            out.append("RTT usado nos pedidos de retransmissão: ").append(nackRttMs).append(" ms\n");
+        if (rtxResponseMs > 0)
+            out.append("Última estimativa de resposta aos NACK: ").append(rtxResponseMs).append(" ms\n");
         out.append("Unidades AU danificadas / sem imagem: ").append(drops)
             .append(" / ").append(nonPictureUnits).append('\n');
 

@@ -69,6 +69,8 @@ struct PeerConnection {
   uint32_t remote_vrtx_ssrc;
   int video_payload_type;
   int video_rtx_payload_type;
+  uint32_t video_recovery_sample_ms;
+  uint32_t video_recovery_rtt_ms;
   uint32_t video_last_nack_check_ms;
   int video_nack_checked;
   uint32_t video_nack_requests;
@@ -612,6 +614,31 @@ static char* peer_connection_dtls_role_setup_value(DtlsSrtpRole d) {
   return d == DTLS_SRTP_ROLE_SERVER ? "a=setup:passive" : "a=setup:active";
 }
 
+static uint32_t peer_connection_video_recovery_rtt_ms(PeerConnection* pc) {
+  const Agent* agent = &pc->agent;
+  if (agent->rtt_sample_count < 3)
+    return agent->rtt_current_ms;
+  if (pc->video_recovery_rtt_ms == 0 ||
+      pc->video_recovery_sample_ms != agent->rtt_probe_last_sample_ms) {
+    pc->video_recovery_sample_ms = agent->rtt_probe_last_sample_ms;
+    pc->video_recovery_rtt_ms = rtp_recovery_recent_rtt_ms(
+        agent->rtt_samples, AGENT_RTT_SAMPLE_WINDOW, agent->rtt_sample_cursor, agent->rtt_sample_count);
+  }
+  return pc->video_recovery_rtt_ms;
+}
+
+static void peer_connection_update_video_gap_budget(PeerConnection* pc, uint32_t now_ms) {
+  const uint32_t control_rtt_ms = peer_connection_video_recovery_rtt_ms(pc);
+  const uint32_t observed_rtx_ms = rtp_decoder_recent_rtx_response_ms(&pc->vrtp_decoder, now_ms);
+  const uint32_t hold_rtt_ms = observed_rtx_ms > control_rtt_ms ? observed_rtx_ms : control_rtt_ms;
+  const uint32_t jitter_ms = rtp_recovery_jitter_ms(pc->agent.rtt_jitter_q4);
+  const uint32_t hold_ms = rtp_recovery_startup_gap_hold_ms(
+      rtp_recovery_gap_hold_ms(hold_rtt_ms, jitter_ms), pc->vrtp_decoder.access_units_completed);
+  rtp_decoder_set_reorder_grace_ms(&pc->vrtp_decoder, hold_ms);
+  rtp_decoder_set_reorder_burst_grace_ms(&pc->vrtp_decoder,
+      rtp_recovery_burst_gap_hold_ms(hold_ms, hold_rtt_ms, jitter_ms));
+}
+
 static int peer_connection_loop_internal(PeerConnection* pc,
                                          int completed_poll_timeout_ms) {
   uint32_t ssrc = 0;
@@ -755,20 +782,6 @@ static int peer_connection_loop_internal(PeerConnection* pc,
 
           ssrc = rtp_get_ssrc(pc->agent_buf);
           RtpPacket* rtp = (RtpPacket*)pc->agent_buf;
-          const uint32_t regular_gap_hold_ms =
-              rtp_recovery_gap_hold_ms(pc->agent.rtt_current_ms,
-                                       pc->agent.rtt_jitter_q4 / 4u);
-          const uint32_t startup_gap_hold_ms =
-              rtp_recovery_startup_gap_hold_ms(
-                  regular_gap_hold_ms,
-                  pc->vrtp_decoder.access_units_completed);
-          rtp_decoder_set_reorder_grace_ms(
-              &pc->vrtp_decoder, startup_gap_hold_ms);
-          rtp_decoder_set_reorder_burst_grace_ms(
-              &pc->vrtp_decoder,
-              rtp_recovery_burst_gap_hold_ms(
-                  startup_gap_hold_ms, pc->agent.rtt_current_ms,
-                  pc->agent.rtt_jitter_q4 / 4u));
           const int is_audio_payload = rtp->header.type == PT_PCMU ||
                                        rtp->header.type == PT_PCMA ||
                                        rtp->header.type == PT_OPUS ||
@@ -786,6 +799,7 @@ static int peer_connection_loop_internal(PeerConnection* pc,
                      ssrc == pc->remote_vrtx_ssrc &&
                      pc->video_rtx_payload_type >= 0 &&
                      rtp->header.type == (uint8_t)pc->video_rtx_payload_type) {
+            peer_connection_update_video_gap_budget(pc, ports_get_monotonic_time_ms());
             pc->video_rtx_packets_received++;
             size_t recovered_size = (size_t)pc->agent_ret;
             if (rtp_packet_unwrap_rtx(pc->agent_buf, &recovered_size,
@@ -821,6 +835,7 @@ static int peer_connection_loop_internal(PeerConnection* pc,
               pc->remote_vssrc = ssrc;
               LOGI("Learned remote video SSRC from RTP: %" PRIu32, pc->remote_vssrc);
             }
+            peer_connection_update_video_gap_budget(pc, ports_get_monotonic_time_ms());
             rtp_receive_stats_update(&pc->video_rx_stats, ssrc, ntohs(rtp->header.seq_number));
             rtp_decoder_decode(&pc->vrtp_decoder, pc->agent_buf, pc->agent_ret);
             if (pc->completed_rtp_packets % 6000 == 0) {
@@ -1131,14 +1146,16 @@ static void peer_connection_maybe_send_video_nack(PeerConnection* pc) {
   pc->video_last_nack_check_ms = now_ms;
 
   RtcpNack entries[RTCP_MAX_NACK_ENTRIES];
-  const uint32_t rtt_ms = pc->agent.rtt_current_ms;
+  const uint32_t rtt_ms = peer_connection_video_recovery_rtt_ms(pc);
   const size_t count = rtp_decoder_get_nacks(&pc->vrtp_decoder, now_ms, rtt_ms, entries);
   if (count == 0 || peer_connection_send_rtcp_nack(pc, pc->remote_vssrc, entries, count) < 0)
     return;
 
   pc->video_nack_requests++;
+  const uint32_t observed_rtx_ms = rtp_decoder_recent_rtx_response_ms(&pc->vrtp_decoder, now_ms);
+  const uint32_t retry_rtt_ms = observed_rtx_ms > rtt_ms ? observed_rtx_ms : rtt_ms;
   for (size_t i = 0; i < count; ++i) {
-    pc->video_nack_retries += rtp_decoder_note_nack(&pc->vrtp_decoder, now_ms, rtt_ms,
+    pc->video_nack_retries += rtp_decoder_note_nack(&pc->vrtp_decoder, now_ms, retry_rtt_ms,
                                                    entries[i].packet_id, entries[i].bitmask);
     pc->video_nack_packets_requested += peer_connection_nack_packet_count(entries[i].bitmask);
   }
@@ -1378,5 +1395,8 @@ int peer_connection_get_video_rtp_stats(PeerConnection* pc, PeerVideoRtpStats* s
   stats->rtx_packets_received = pc->video_rtx_packets_received;
   stats->rtx_packets_recovered = pc->video_rtx_packets_recovered;
   stats->rtx_packets_invalid = pc->video_rtx_packets_invalid;
+  stats->nack_rtt_ms = peer_connection_video_recovery_rtt_ms(pc);
+  stats->rtx_response_ms = rtp_decoder_recent_rtx_response_ms(
+      &pc->vrtp_decoder, ports_get_monotonic_time_ms());
   return 0;
 }

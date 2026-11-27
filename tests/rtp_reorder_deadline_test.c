@@ -230,6 +230,49 @@ static void test_large_burst_keeps_inflight_rtx(void) {
   free(decoder.reorder_buf);
 }
 
+static void test_rtx_after_rtt_spike(void) {
+  const uint32_t samples[] = {624, 220, 91, 90, 92, 94, 93};
+  const uint32_t recovery_rtt = rtp_recovery_recent_rtt_ms(samples, 7, 2, 7);
+  assert(recovery_rtt == 94);
+  assert(rtp_recovery_recent_rtt_ms(samples, 7, 2, 0) == 0);
+  assert(rtp_recovery_jitter_ms(848) == 53);
+  assert(rtp_recovery_jitter_ms(80) == 5);
+
+  struct Output output = {0};
+  RtpDecoder decoder = {0};
+  decoder.type = PT_H264;
+  decoder.user_data = &output;
+  decoder.decode_func = record_sequence;
+  decoder.reorder_buf = calloc(RTP_REORDER_WINDOW, RTP_REORDER_PACKET_CAPACITY);
+  assert(decoder.reorder_buf);
+
+  rtp_decoder_set_reorder_grace_ms(&decoder, 140);
+  receive(&decoder, 1000, 1000);
+  receive(&decoder, 1003, 1001);
+  RtcpNack entries[RTCP_MAX_NACK_ENTRIES];
+  assert(rtp_decoder_get_nacks(&decoder, 1006, 624, entries) == 0);
+  assert(rtp_decoder_get_nacks(&decoder, 1006, recovery_rtt, entries) == 1);
+  assert(entries[0].packet_id == 1001 && entries[0].bitmask == 1);
+  rtp_decoder_note_nack(&decoder, 1006, recovery_rtt, entries[0].packet_id, entries[0].bitmask);
+  assert(retransmit(&decoder, 1002, 1113));
+  assert(rtp_decoder_recent_rtx_response_ms(&decoder, 1113) == 107);
+  assert(retransmit(&decoder, 1001, 1123));
+  assert(output.count == 4 && output.sequences[3] == 1003);
+  assert(rtp_decoder_recent_rtx_response_ms(&decoder, 1123) == 107);
+
+  receive(&decoder, 1005, 1300);
+  const uint32_t congested[] = {90, 624, 550, 600, 500};
+  const uint32_t congested_rtt = rtp_recovery_recent_rtt_ms(congested, 5, 0, 5);
+  assert(congested_rtt == 550);
+  assert(rtp_decoder_get_nacks(&decoder, 1305, congested_rtt, entries) == 0);
+  assert(rtp_decoder_get_nacks(&decoder, 1305, recovery_rtt, entries) == 1);
+  rtp_decoder_note_nack(&decoder, 1305, 107, entries[0].packet_id, entries[0].bitmask);
+  assert(retransmit(&decoder, 1004, 1430));
+  assert(rtp_decoder_recent_rtx_response_ms(&decoder, 1430) == 112);
+  assert(rtp_decoder_recent_rtx_response_ms(&decoder, 9431) == 0);
+  free(decoder.reorder_buf);
+}
+
 static void test_nack_wire_format(void) {
   const RtcpNack entries[] = {{65535, 3}, {50, 0xff00}};
   const uint8_t expected[] = {
@@ -249,4 +292,5 @@ int main(void) {
   test_nack_wire_format();
   test_gap_retains_rtx_deadline();
   test_large_burst_keeps_inflight_rtx();
+  test_rtx_after_rtt_spike();
 }

@@ -838,6 +838,7 @@ static int rtp_decoder_decode_reordered(RtpDecoder* rtp_decoder, const uint8_t* 
           rtp_decoder->startup_sequence_rebases)) {
     memset(rtp_decoder->reorder_used, 0, sizeof(rtp_decoder->reorder_used));
     memset(rtp_decoder->nack_sent, 0, sizeof(rtp_decoder->nack_sent));
+    rtp_decoder->rtx_response_ms = 0;
     rtp_decoder->reorder_buffered_packets = 0;
     rtp_decoder_reset_fragment(rtp_decoder);
     rtp_decoder_reset_access_unit(rtp_decoder);
@@ -1063,10 +1064,29 @@ uint32_t rtp_decoder_note_nack(RtpDecoder* decoder, uint32_t now_ms, uint32_t rt
   return retries;
 }
 
+uint32_t rtp_decoder_recent_rtx_response_ms(const RtpDecoder* decoder, uint32_t now_ms) {
+  return now_ms - decoder->rtx_response_measured_ms <= 8000u ? decoder->rtx_response_ms : 0;
+}
+
 int rtp_decoder_decode_retransmission(RtpDecoder* decoder, const uint8_t* data, size_t size) {
   if (decoder->type != PT_H264 || decoder->decode_func == NULL)
     return 0;
-  return rtp_decoder_decode_reordered(decoder, data, size, 1) > 0;
+  const uint32_t now_ms = ports_get_monotonic_time_ms();
+  if (rtp_decoder_decode_reordered(decoder, data, size, 1) <= 0)
+    return 0;
+
+  // Take one sample per NACK datagram. A large RTX batch should not count as
+  // hundreds of individual RTT measurements.
+  const size_t slot = read_be16(data + 2) % RTP_REORDER_WINDOW;
+  const uint32_t sent_ms = decoder->nack_sent_ms[slot];
+  const uint32_t delay_ms = now_ms - sent_ms;
+  const uint32_t previous = rtp_decoder_recent_rtx_response_ms(decoder, now_ms);
+  if (delay_ms != 0 && (previous == 0 || (int32_t)(sent_ms - decoder->rtx_response_request_ms) > 0)) {
+    decoder->rtx_response_ms = previous == 0 ? delay_ms : (previous * 3u + delay_ms + 2u) / 4u;
+    decoder->rtx_response_measured_ms = now_ms;
+    decoder->rtx_response_request_ms = sent_ms;
+  }
+  return 1;
 }
 
 int rtp_decoder_decode(RtpDecoder* rtp_decoder, const uint8_t* buf, size_t size) {

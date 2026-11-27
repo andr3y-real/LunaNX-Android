@@ -30,6 +30,30 @@ static inline uint32_t rtp_recovery_clamp_u32(uint32_t value,
   return value;
 }
 
+// Use the short history of matched probes for feedback. A slow STUN reply
+// should not suspend an otherwise usable RTP path until the next probe.
+static inline uint32_t rtp_recovery_recent_rtt_ms(
+    const uint32_t* samples, uint16_t capacity, uint16_t cursor, uint16_t count) {
+  if (count == 0)
+    return 0;
+  const uint16_t used = count < 5u ? count : 5u;
+  uint32_t sorted[5];
+  for (uint16_t i = 0; i < used; ++i) {
+    const uint32_t sample = samples[(cursor + capacity - 1u - i) % capacity];
+    uint16_t pos = i;
+    while (pos > 0 && sorted[pos - 1] > sample) {
+      sorted[pos] = sorted[pos - 1];
+      --pos;
+    }
+    sorted[pos] = sample;
+  }
+  return sorted[used / 2u];
+}
+
+static inline uint32_t rtp_recovery_jitter_ms(uint32_t jitter_q4) {
+  return (jitter_q4 + 8u) >> 4;
+}
+
 static inline uint32_t rtp_recovery_gap_hold_ms(uint32_t rtt_ms,
                                                 uint32_t jitter_ms) {
   if (rtt_ms == 0)

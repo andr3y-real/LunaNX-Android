@@ -109,6 +109,8 @@ typedef struct PeerVideoRtpStats {
   uint32_t rtx_packets_received;
   uint32_t rtx_packets_recovered;
   uint32_t rtx_packets_invalid;
+  uint32_t nack_rtt_ms;
+  uint32_t rtx_response_ms;
 } PeerVideoRtpStats;
 
 typedef struct PeerConfiguration {

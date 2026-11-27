@@ -1391,7 +1391,8 @@ LunaStreamSession::AndroidVideoStats LunaStreamSession::android_video_stats()
             codec_watchdog_resets_.load(),
             decoder_ ? decoder_->slow_codec_outputs() : 0,
             decoder_ ? decoder_->peak_playout_reserve_us() / 1000 : 0,
-            decoder_ ? decoder_->deferred_frames_presented() : 0};
+            decoder_ ? decoder_->deferred_frames_presented() : 0,
+            rtp.nack_rtt_ms, rtp.rtx_response_ms};
 }
 #endif
 
